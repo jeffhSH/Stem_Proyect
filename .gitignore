@@ -11,3 +11,6 @@ vosk-model-*/
 
 # Caché de apps (se regenera en tiempo de ejecución)
 apps_cache.json
+
+# Variables de entorno (claves secretas)
+.env

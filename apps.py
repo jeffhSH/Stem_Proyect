@@ -15,6 +15,9 @@ STARTMENU_DIRS = [
     Path(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs"),
     _HOME / "AppData" / "Roaming" / "Microsoft" / "Windows" / "Start Menu" / "Programs",
     _HOME / "AppData" / "Local" / "Microsoft" / "WindowsApps",
+    _HOME / "Desktop",
+    Path(r"C:\Program Files"),
+    Path(r"C:\Program Files (x86)"),
 ]
 CACHE_PATH = Path(__file__).parent / "apps_cache.json"
 
@@ -133,7 +136,7 @@ _ACCIONES_SISTEMA = {
 # ── Escaneo y caché ────────────────────────────────────────────────────────────
 
 def escanear(debug: bool = False) -> dict[str, str]:
-    """Recorre los .lnk y .exe de los directorios configurados y devuelve {nombre_canonico: valor}."""
+    """Recorre los .lnk y .exe de los directorios configurados y devuelve {stem_lower: ruta}."""
     candidatos: list[Path] = []
     for d in STARTMENU_DIRS:
         if d.exists():
@@ -147,18 +150,13 @@ def escanear(debug: bool = False) -> dict[str, str]:
         print()
 
     resultado: dict[str, str] = {}
-    for nombre, terminos in APP_BUSQUEDA.items():
-        matched = False
-        for f in candidatos:
-            if any(t in f.stem.lower() for t in terminos):
-                valor = _resolver_lnk(f) if f.suffix.lower() == ".lnk" else str(f)
-                resultado[nombre.lower()] = valor
-                if debug:
-                    print(f"[debug] '{nombre}' → {f.name}  =>  {valor}")
-                matched = True
-                break
-        if debug and not matched:
-            print(f"[debug] '{nombre}' — sin coincidencia (terminos: {terminos})")
+    for f in candidatos:
+        clave = f.stem.lower()
+        if clave not in resultado:
+            valor = _resolver_lnk(f) if f.suffix.lower() == ".lnk" else str(f)
+            resultado[clave] = valor
+            if debug:
+                print(f"[debug] '{clave}' → {valor}")
 
     if debug:
         print()
@@ -233,6 +231,8 @@ def iniciar_watcher() -> None:
         _cache = escanear()
         _guardar_cache(_cache)
     print(f"[apps] {len(_cache)} apps en caché")
+    for nombre, valor in sorted(_cache.items()):
+        print(f"  {nombre}: {valor}")
 
     handler  = _CacheHandler()
     observer = Observer()
