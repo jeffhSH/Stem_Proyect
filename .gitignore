@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Modelo Vosk (binarios grandes, no va en el repo)
+vosk-model-*/
+
+# Claude Code
+.claude/
+
+# Caché de apps (se regenera en tiempo de ejecución)
+apps_cache.json
