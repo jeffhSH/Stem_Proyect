@@ -14,7 +14,7 @@ import vosk
 MODEL_PATH     = "vosk-model-small-es-0.42"
 SAMPLE_RATE    = 16000
 CHUNK          = 4000
-WAKE_WORDS     = ["stem", "estén", "stein", "steam", "stand", "steve", "están", "sten", "esteam"]
+WAKE_WORDS     = ["stem", "estén", "stein", "steam", "stand", "steve", "están", "sten", "esteam", "stern"]
 TIMEOUT_ACTIVO = 6.0
 
 
@@ -105,7 +105,7 @@ def escuchar_wake_word(
 ) -> None:
     """
     Vosk escucha continuamente.
-    Al detectar 'stem' pasa a modo activo y espera TIMEOUT_ACTIVO segundos
+    Al detectar una wake word pasa a modo activo y espera TIMEOUT_ACTIVO segundos
     para recibir un comando; si no llega, vuelve a dormir.
     """
     from comandos import texto_a_comando
@@ -139,12 +139,12 @@ def escuchar_wake_word(
 
                 data = audio_q.get()
 
-                # --- Amplificación 30% + clip para evitar overflow int16 ---
-                arr = np.frombuffer(data, dtype=np.int16)
-                arr = np.clip(arr.astype(np.float32) * 1.3, -32768, 32767).astype(np.int16)
+                # Amplificación 50% con clip para evitar overflow int16
+                arr  = np.frombuffer(data, dtype=np.int16)
+                arr  = np.clip(arr.astype(np.float32) * 1.5, -32768, 32767).astype(np.int16)
                 data = arr.tobytes()
 
-                # --- DIAGNÓSTICO: nivel RMS del chunk ---
+                # Diagnóstico: RMS del chunk
                 rms = np.sqrt(np.mean(arr.astype(np.float32) ** 2)) / 32768.0
                 print(f"[rms]: {rms:.4f}")
 
@@ -161,20 +161,30 @@ def escuchar_wake_word(
                 if not texto:
                     continue
 
-                # Estado dormido: reacciona a cualquier variante fonológica del wake word
+                # Buscar wake word en el texto
+                wake = next((w for w in WAKE_WORDS if w in texto), None)
+
                 if dormido:
-                    if any(w in texto for w in WAKE_WORDS):
+                    if not wake:
+                        continue
+                    rec.Reset()
+                    resto = texto.split(wake, 1)[-1].strip()
+                    if resto and es_final:
+                        # Wake word + comando en la misma frase — procesar inmediatamente
+                        print(f"[stem] '{wake}' + '{resto}' — procesando al instante")
+                        texto = resto
+                        # cae directo al bloque de comandos sin entrar en modo espera
+                    else:
+                        # Solo wake word (o resultado parcial) — entrar en modo espera
                         print(f"[stem] activado — di un comando ({int(TIMEOUT_ACTIVO)} s)...")
                         dormido  = False
                         t_activo = time.time()
-                        rec.Reset()
-                    continue
-
-                # Estado activo: espera resultado final para procesar el comando
-                if not es_final:
-                    continue
-
-                print(f"[vosk]: {texto}")
+                        continue
+                else:
+                    # Estado activo: solo procesa resultados finales como comandos
+                    if not es_final:
+                        continue
+                    print(f"[vosk]: {texto}")
 
                 if "apagar sistema" in texto:
                     if _esperar_confirmacion(audio_q, rec):

@@ -1,7 +1,9 @@
 import ctypes
 import json
 import os
+import queue as _queue
 import subprocess
+import time
 import webbrowser
 from pathlib import Path
 from threading import Lock
@@ -48,16 +50,22 @@ APP_BUSQUEDA = {
     "minecraft": ["modrinth", "minecraft launcher"],
 }
 
+_VOSK_MODEL_PATH = "vosk-model-small-es-0.42"
+
 MENSAJES = {
-    "youtube":   "Abriendo YouTube...",
-    "minimizar": "Minimizando ventana...",
-    "skip":      "Cambiando ventana (Alt+Tab)...",
-    "whatsapp":  "Abriendo WhatsApp...",
-    "minecraft": "Abriendo Modrinth/Minecraft...",
-    "spotify":   "Abriendo Spotify...",
-    "vscode":    "Abriendo VS Code...",
-    "claude":    "Abriendo Claude...",
-    "salir":     "Cerrando programa.",
+    "youtube":         "Abriendo YouTube...",
+    "minimizar":       "Minimizando ventana...",
+    "cambiar_ventana": "Cambiando ventana (Alt+Tab)...",
+    "whatsapp":        "Abriendo WhatsApp...",
+    "minecraft":       "Abriendo Modrinth/Minecraft...",
+    "spotify":         "Abriendo Spotify...",
+    "vscode":          "Abriendo VS Code...",
+    "claude":          "Abriendo Claude...",
+    "apagar_pantalla": "Apagando pantalla...",
+    "bloquear":        "Bloqueando equipo...",
+    "reiniciar":       "Preparando reinicio...",
+    "apagar_sistema":  "Preparando apagado del sistema...",
+    "salir":           "Cerrando programa.",
 }
 
 _URL_PREFIX = "url:"
@@ -127,9 +135,70 @@ def _skip() -> None:
     kb(VK_TAB, 0, KEYEVENTF_KEYUP, 0); kb(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
 
 
+def _apagar_pantalla() -> None:
+    ctypes.windll.user32.SendMessageW(0xFFFF, 0x0112, 0xF170, 2)
+
+
+def _bloquear() -> None:
+    ctypes.windll.user32.LockWorkStation()
+
+
+def _esperar_confirmacion_voz() -> bool:
+    """Escucha 6 s con Vosk esperando 'confirmar'. Retorna True si se confirma."""
+    import json as _json
+    import vosk
+    import sounddevice as sd
+
+    try:
+        vosk.SetLogLevel(-1)
+        model = vosk.Model(_VOSK_MODEL_PATH)
+        rec   = vosk.KaldiRecognizer(model, 16000)
+    except Exception as e:
+        print(f"[confirmación] error cargando modelo: {e}")
+        return False
+
+    print("[sistema] di 'confirmar' en los próximos 6 segundos...")
+    t_fin = time.time() + 6.0
+    q: _queue.Queue = _queue.Queue()
+
+    def _cb(indata, frames, time_info, status):
+        q.put(bytes(indata))
+
+    with sd.RawInputStream(samplerate=16000, blocksize=4000, dtype="int16",
+                           channels=1, callback=_cb):
+        while time.time() < t_fin:
+            try:
+                data = q.get(timeout=max(0.1, t_fin - time.time()))
+            except _queue.Empty:
+                break
+            if rec.AcceptWaveform(data):
+                texto = _json.loads(rec.Result()).get("text", "").lower()
+            else:
+                texto = _json.loads(rec.PartialResult()).get("partial", "").lower()
+            if "confirmar" in texto:
+                return True
+
+    print("[sistema] confirmación no recibida, cancelando.")
+    return False
+
+
+def _reiniciar() -> None:
+    if _esperar_confirmacion_voz():
+        subprocess.run(["shutdown", "/r", "/t", "0"])
+
+
+def _apagar_sistema() -> None:
+    if _esperar_confirmacion_voz():
+        subprocess.run(["shutdown", "/s", "/t", "0"])
+
+
 _ACCIONES_SISTEMA = {
-    "minimizar": _minimizar,
-    "skip":      _skip,
+    "minimizar":       _minimizar,
+    "cambiar_ventana": _skip,
+    "apagar_pantalla": _apagar_pantalla,
+    "bloquear":        _bloquear,
+    "reiniciar":       _reiniciar,
+    "apagar_sistema":  _apagar_sistema,
 }
 
 
