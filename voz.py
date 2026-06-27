@@ -72,17 +72,6 @@ def _cargar_modelo(model_path: str) -> vosk.Model:
     return _modelo_activo
 
 
-def _stem_con_confianza(result_raw: str, umbral: float = 0.7) -> bool:
-    """Fix 3: True si 'stem' aparece en el resultado final de Vosk con conf >= umbral."""
-    try:
-        for w in json.loads(result_raw).get("result", []):
-            if w.get("word", "").lower() == "stem" and w.get("conf", 0.0) >= umbral:
-                return True
-    except Exception:
-        pass
-    return False
-
-
 def escuchar(
     on_texto:   Callable[[str], bool],
     on_parcial: Callable[[str], tuple[bool, bool]],
@@ -158,7 +147,7 @@ def escuchar_wake_word(
 ) -> None:
     """
     Vosk escucha continuamente.
-    Dormido: rec_dormido genérico con SetWords=True detecta 'stem' por confianza (Fix 3).
+    Dormido: rec_dormido genérico detecta wake word por substring en WAKE_WORDS.
     Activo:  rec_activo con gramática restringida a VARIANTES reduce falsos positivos (Fix 1).
     """
     from comandos import texto_a_comando, VARIANTES, NUMEROS_ES  # noqa: PLC0415
@@ -170,9 +159,8 @@ def escuchar_wake_word(
     _gram_numeros = list(NUMEROS_ES.keys())
     _gram_json    = json.dumps(_gram_frases + _gram_numeros + ["confirmar", "[unk]"])
 
-    # Fix 1 + Fix 3: dos reconocedores
+    # Fix 1: dos reconocedores
     rec_dormido = vosk.KaldiRecognizer(model, SAMPLE_RATE)
-    rec_dormido.SetWords(True)              # Fix 3: habilita scores de confianza por palabra
     rec_activo  = vosk.KaldiRecognizer(model, SAMPLE_RATE, _gram_json)
 
     rec = rec_dormido   # empieza en estado dormido
@@ -209,7 +197,7 @@ def escuchar_wake_word(
     _kb_listener.daemon = True
     _kb_listener.start()
 
-    print("En espera de 'stem' (conf>=0.7) o tecla | ... Ctrl+C para salir.\n")
+    print(f"En espera de {WAKE_WORDS} o tecla | ... Ctrl+C para salir.\n")
     print("Presioná T para entrar al modo entrenamiento.\n")
 
     try:
@@ -267,11 +255,9 @@ def escuchar_wake_word(
                 es_final = rec.AcceptWaveform(data)
 
                 if es_final:
-                    result_raw = rec.Result()
-                    texto = json.loads(result_raw).get("text", "").lower().strip()
+                    texto = json.loads(rec.Result()).get("text", "").lower().strip()
                     print(f"[vosk final]: '{texto}'")
                 else:
-                    result_raw = None
                     texto = json.loads(rec.PartialResult()).get("partial", "").lower().strip()
                     if texto:
                         print(f"[vosk parcial]: '{texto}'")
@@ -279,26 +265,31 @@ def escuchar_wake_word(
                 if not texto:
                     continue
 
-                if dormido:
-                    # Fix 3: activa solo si 'stem' tiene conf >= 0.7 en resultado final
-                    if not (es_final and _stem_con_confianza(result_raw)):
-                        continue
+                # Fix A: detección de wake word por substring (lista WAKE_WORDS)
+                wake = next((w for w in WAKE_WORDS if w in texto), None)
 
-                    # Fix 1: cambiar a recognizer con gramática restringida
-                    dormido  = False
-                    t_activo = time.time()
-                    rec = rec_activo
+                if dormido:
+                    if not wake:
+                        continue
                     rec.Reset()
 
-                    # Inline: 'stem <comando>' en la misma frase
-                    words    = texto.split()
-                    stem_idx = next((i for i, w in enumerate(words) if w == "stem"), -1)
-                    if stem_idx >= 0 and stem_idx < len(words) - 1:
-                        texto = " ".join(words[stem_idx + 1:])
-                        print(f"[stem] 'stem' + '{texto}' — procesando al instante")
-                        # cae al bloque de comandos
+                    # Fix B: quitar wake word y TODAS sus variantes del texto
+                    # para que texto_a_comando reciba solo la parte del comando
+                    resto = texto
+                    for ww in WAKE_WORDS:
+                        resto = resto.replace(ww, " ")
+                    resto = " ".join(resto.split())   # colapsa espacios múltiples
+
+                    if resto and es_final:
+                        print(f"[stem] '{wake}' + '{resto}' — procesando al instante")
+                        texto = resto
+                        # cae al bloque de comandos (dormido sigue True)
                     else:
                         print(f"[stem] activado — di un comando ({int(TIMEOUT_ACTIVO)} s)...")
+                        dormido  = False
+                        t_activo = time.time()
+                        rec = rec_activo   # Fix 1: gramática restringida en modo activo
+                        rec.Reset()
                         continue
 
                 else:
