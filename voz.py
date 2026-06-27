@@ -3,6 +3,7 @@ import json
 import queue
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Callable
@@ -17,8 +18,48 @@ CHUNK          = 4000
 WAKE_WORDS     = ["stem", "estén", "stein", "steam", "stand", "steve", "están", "sten", "esteam", "stern"]
 TIMEOUT_ACTIVO = 6.0
 
+# Modelo cargado (accesible por training.py sin recarga)
+_modelo_activo: vosk.Model | None = None
+# Señal de pausa durante el modo entrenamiento
+_entrenando           = threading.Event()
+# Se activa mientras un comando está ejecutándose (para no dormir antes de que termine)
+_comando_ejecutandose = threading.Event()
+
+
+def _apagar_pantalla() -> None:
+    """
+    Envía WM_SYSCOMMAND / SC_MONITORPOWER en un hilo daemon.
+    SendMessageW con HWND_BROADCAST espera respuesta de TODAS las ventanas del
+    sistema; si alguna está colgada puede bloquear minutos. Corriendo en un
+    hilo daemon el bucle de audio sigue funcionando sin importar cuánto tarde.
+    """
+    threading.Thread(
+        target=lambda: ctypes.windll.user32.SendMessageW(0xFFFF, 0x0112, 0xF170, 2),
+        daemon=True,
+    ).start()
+
+
+def _drenar_audio(q: queue.Queue) -> None:
+    """Descarta todo el audio acumulado en la cola para evitar re-procesar la utterance anterior."""
+    while not q.empty():
+        try:
+            q.get_nowait()
+        except queue.Empty:
+            break
+
+
+def pausar() -> None:
+    """Pausa el bucle de reconocimiento. Llamar antes del modo entrenamiento."""
+    _entrenando.set()
+
+
+def reanudar() -> None:
+    """Reanuda el bucle de reconocimiento. Llamar al salir del modo entrenamiento."""
+    _entrenando.clear()
+
 
 def _cargar_modelo(model_path: str) -> vosk.Model:
+    global _modelo_activo
     path = Path(model_path)
     if not path.exists():
         print(f"Error: modelo no encontrado en '{model_path}'")
@@ -27,7 +68,19 @@ def _cargar_modelo(model_path: str) -> vosk.Model:
         sys.exit(1)
     vosk.SetLogLevel(-1)
     print(f"Cargando modelo '{path.name}'...")
-    return vosk.Model(str(path))
+    _modelo_activo = vosk.Model(str(path))
+    return _modelo_activo
+
+
+def _stem_con_confianza(result_raw: str, umbral: float = 0.7) -> bool:
+    """Fix 3: True si 'stem' aparece en el resultado final de Vosk con conf >= umbral."""
+    try:
+        for w in json.loads(result_raw).get("result", []):
+            if w.get("word", "").lower() == "stem" and w.get("conf", 0.0) >= umbral:
+                return True
+    except Exception:
+        pass
+    return False
 
 
 def escuchar(
@@ -105,23 +158,59 @@ def escuchar_wake_word(
 ) -> None:
     """
     Vosk escucha continuamente.
-    Al detectar una wake word pasa a modo activo y espera TIMEOUT_ACTIVO segundos
-    para recibir un comando; si no llega, vuelve a dormir.
+    Dormido: rec_dormido genérico con SetWords=True detecta 'stem' por confianza (Fix 3).
+    Activo:  rec_activo con gramática restringida a VARIANTES reduce falsos positivos (Fix 1).
     """
-    from comandos import texto_a_comando
+    from comandos import texto_a_comando, VARIANTES, NUMEROS_ES  # noqa: PLC0415
 
     model = _cargar_modelo(model_path or MODEL_PATH)
-    rec   = vosk.KaldiRecognizer(model, SAMPLE_RATE)
+
+    # Fix 1: gramática restringida — variantes + números para porcentajes + confirmación
+    _gram_frases  = sorted({v for vset in VARIANTES.values() for v in vset})
+    _gram_numeros = list(NUMEROS_ES.keys())
+    _gram_json    = json.dumps(_gram_frases + _gram_numeros + ["confirmar", "[unk]"])
+
+    # Fix 1 + Fix 3: dos reconocedores
+    rec_dormido = vosk.KaldiRecognizer(model, SAMPLE_RATE)
+    rec_dormido.SetWords(True)              # Fix 3: habilita scores de confianza por palabra
+    rec_activo  = vosk.KaldiRecognizer(model, SAMPLE_RATE, _gram_json)
+
+    rec = rec_dormido   # empieza en estado dormido
 
     audio_q: queue.Queue = queue.Queue()
 
     def _callback(indata, frames, time_info, status):
         audio_q.put(bytes(indata))
 
-    dormido  = True
-    t_activo = 0.0
+    dormido         = True
+    t_activo        = 0.0
+    _era_entrenando = False
 
-    print(f"En espera de {WAKE_WORDS}... Ctrl+C para salir.\n")
+    # ── Tecla | como activador en paralelo al wake word por voz ──────────────
+    from pynput import keyboard as _kb  # noqa: PLC0415
+
+    _tecla_activa = threading.Event()
+
+    def _on_press(key):
+        try:
+            if getattr(key, "char", None) == "|" and not _tecla_activa.is_set():
+                _tecla_activa.set()
+        except Exception:
+            pass
+
+    def _on_release(key):
+        try:
+            if getattr(key, "char", None) == "|":
+                _tecla_activa.clear()
+        except Exception:
+            pass
+
+    _kb_listener = _kb.Listener(on_press=_on_press, on_release=_on_release)
+    _kb_listener.daemon = True
+    _kb_listener.start()
+
+    print("En espera de 'stem' (conf>=0.7) o tecla | ... Ctrl+C para salir.\n")
+    print("Presioná T para entrar al modo entrenamiento.\n")
 
     try:
         with sd.RawInputStream(
@@ -132,12 +221,39 @@ def escuchar_wake_word(
             callback=_callback,
         ):
             while True:
+                # Activación/extensión de ventana por tecla |
+                if _tecla_activa.is_set():
+                    if dormido:
+                        dormido  = False
+                        t_activo = time.time()
+                        rec = rec_activo   # Fix 1: gramática restringida al activar
+                        rec.Reset()
+                        print(f"[stem] activado por | — di un comando ({int(TIMEOUT_ACTIVO)} s)...")
+                    else:
+                        t_activo = time.time()   # extiende mientras se mantiene presionada
+
                 if not dormido and time.time() - t_activo > TIMEOUT_ACTIVO:
-                    print("[stem] tiempo agotado, volviendo a dormir...")
-                    dormido = True
-                    rec.Reset()
+                    if _comando_ejecutandose.is_set():
+                        t_activo = time.time()   # espera a que el comando termine antes de dormir
+                    else:
+                        print("[stem] tiempo agotado, volviendo a dormir...")
+                        dormido = True
+                        rec = rec_dormido   # Fix 1: restaurar recognizer genérico
+                        rec.Reset()
 
                 data = audio_q.get()
+
+                # Descarta audio mientras está en modo entrenamiento
+                if _entrenando.is_set():
+                    _era_entrenando = True
+                    continue
+
+                # Al volver del modo entrenamiento: reset para evitar artefactos
+                if _era_entrenando:
+                    _era_entrenando = False
+                    dormido = True
+                    rec = rec_dormido   # Fix 1
+                    rec.Reset()
 
                 # Amplificación 50% con clip para evitar overflow int16
                 arr  = np.frombuffer(data, dtype=np.int16)
@@ -151,9 +267,11 @@ def escuchar_wake_word(
                 es_final = rec.AcceptWaveform(data)
 
                 if es_final:
-                    texto = json.loads(rec.Result()).get("text", "").lower().strip()
+                    result_raw = rec.Result()
+                    texto = json.loads(result_raw).get("text", "").lower().strip()
                     print(f"[vosk final]: '{texto}'")
                 else:
+                    result_raw = None
                     texto = json.loads(rec.PartialResult()).get("partial", "").lower().strip()
                     if texto:
                         print(f"[vosk parcial]: '{texto}'")
@@ -161,27 +279,30 @@ def escuchar_wake_word(
                 if not texto:
                     continue
 
-                # Buscar wake word en el texto
-                wake = next((w for w in WAKE_WORDS if w in texto), None)
-
                 if dormido:
-                    if not wake:
+                    # Fix 3: activa solo si 'stem' tiene conf >= 0.7 en resultado final
+                    if not (es_final and _stem_con_confianza(result_raw)):
                         continue
+
+                    # Fix 1: cambiar a recognizer con gramática restringida
+                    dormido  = False
+                    t_activo = time.time()
+                    rec = rec_activo
                     rec.Reset()
-                    resto = texto.split(wake, 1)[-1].strip()
-                    if resto and es_final:
-                        # Wake word + comando en la misma frase — procesar inmediatamente
-                        print(f"[stem] '{wake}' + '{resto}' — procesando al instante")
-                        texto = resto
-                        # cae directo al bloque de comandos sin entrar en modo espera
+
+                    # Inline: 'stem <comando>' en la misma frase
+                    words    = texto.split()
+                    stem_idx = next((i for i, w in enumerate(words) if w == "stem"), -1)
+                    if stem_idx >= 0 and stem_idx < len(words) - 1:
+                        texto = " ".join(words[stem_idx + 1:])
+                        print(f"[stem] 'stem' + '{texto}' — procesando al instante")
+                        # cae al bloque de comandos
                     else:
-                        # Solo wake word (o resultado parcial) — entrar en modo espera
                         print(f"[stem] activado — di un comando ({int(TIMEOUT_ACTIVO)} s)...")
-                        dormido  = False
-                        t_activo = time.time()
                         continue
+
                 else:
-                    # Estado activo: solo procesa resultados finales como comandos
+                    # Estado activo (gramática restringida): solo resultados finales
                     if not es_final:
                         continue
                     print(f"[vosk]: {texto}")
@@ -189,28 +310,54 @@ def escuchar_wake_word(
                 if "apagar sistema" in texto:
                     if _esperar_confirmacion(audio_q, rec):
                         subprocess.run(["shutdown", "/s", "/t", "0"])
+                    _drenar_audio(audio_q)
                     dormido = True
+                    rec = rec_dormido   # Fix 1
+                    rec.Reset()
                     continue
                 if "apagar" in texto:
-                    ctypes.windll.user32.SendMessageW(0xFFFF, 0x0112, 0xF170, 2)
+                    _apagar_pantalla()
+                    _drenar_audio(audio_q)
                     dormido = True
+                    rec = rec_dormido   # Fix 1
+                    rec.Reset()
                     continue
                 if "bloquear" in texto:
                     ctypes.windll.user32.LockWorkStation()
+                    _drenar_audio(audio_q)
                     dormido = True
+                    rec = rec_dormido   # Fix 1
+                    rec.Reset()
                     continue
                 if "reiniciar" in texto:
                     subprocess.run(["shutdown", "/r", "/t", "0"])
+                    _drenar_audio(audio_q)
                     dormido = True
+                    rec = rec_dormido   # Fix 1
+                    rec.Reset()
                     continue
 
                 cmd = texto_a_comando(texto)
                 if cmd:
                     print(f"[oído]: {texto}")
-                    if on_accion(cmd):
-                        break
-                    dormido = True
-                    rec.Reset()
+                    if cmd == "apagar_pantalla":
+                        _apagar_pantalla()
+                        _drenar_audio(audio_q)
+                        dormido = True
+                        rec = rec_dormido   # Fix 1
+                        rec.Reset()
+                    else:
+                        _comando_ejecutandose.set()
+                        if on_accion(cmd):
+                            _comando_ejecutandose.clear()
+                            break
+                        _comando_ejecutandose.clear()
+                        _drenar_audio(audio_q)
+                        dormido = True
+                        rec = rec_dormido   # Fix 1
+                        rec.Reset()
 
     except KeyboardInterrupt:
         print("\nDeteniendo detector.")
+    finally:
+        _kb_listener.stop()

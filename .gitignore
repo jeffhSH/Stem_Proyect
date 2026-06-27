@@ -12,5 +12,8 @@ vosk-model-*/
 # Caché de apps (se regenera en tiempo de ejecución)
 apps_cache.json
 
+# Configuración de hardware local (nombres de adaptadores, se regenera automáticamente)
+config.json
+
 # Variables de entorno (claves secretas)
 .env
