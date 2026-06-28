@@ -303,8 +303,8 @@ def _hilo_ajuste(tipo: str) -> None:
     print(f"[{tipo}] modo ajuste — di 'más'/'menos' o 'listo' ({int(_TIMEOUT_AJUSTE)} s)")
 
     try:
-        with _sd.RawInputStream(samplerate=_SAMPLE_RATE, blocksize=_CHUNK,
-                                dtype="int16", channels=1, callback=_cb):
+        with _sd.RawInputStream(samplerate=_SAMPLE_RATE, blocksize=_CHUNK * 2,
+                                latency="high", dtype="int16", channels=1, callback=_cb):
             while _time.time() < _modo["t_fin"]:
                 try:
                     data = q.get(timeout=0.5)
@@ -444,8 +444,8 @@ def _hilo_navegar() -> None:
     print(f"[navegar] Alt sostenido — di 'siguiente', 'anterior' o 'abrir' ({int(_TIMEOUT_NAVEGAR)} s)")
 
     try:
-        with _sd.RawInputStream(samplerate=_SAMPLE_RATE, blocksize=_CHUNK,
-                                dtype="int16", channels=1, callback=_cb):
+        with _sd.RawInputStream(samplerate=_SAMPLE_RATE, blocksize=_CHUNK * 2,
+                                latency="high", dtype="int16", channels=1, callback=_cb):
             _parcial_actuado = ""
             while _time.time() < _modo["t_fin"]:
                 try:

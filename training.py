@@ -125,7 +125,8 @@ def iniciar() -> None:
     try:
         with sd.RawInputStream(
             samplerate=voz.SAMPLE_RATE,
-            blocksize=_CHUNK,
+            blocksize=_CHUNK * 2,
+            latency="high",
             dtype="int16",
             channels=1,
             callback=_audio_cb,

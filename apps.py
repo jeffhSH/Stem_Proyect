@@ -164,8 +164,8 @@ def _esperar_confirmacion_voz() -> bool:
     def _cb(indata, frames, time_info, status):
         q.put(bytes(indata))
 
-    with sd.RawInputStream(samplerate=16000, blocksize=4000, dtype="int16",
-                           channels=1, callback=_cb):
+    with sd.RawInputStream(samplerate=16000, blocksize=8000, latency="high",
+                           dtype="int16", channels=1, callback=_cb):
         while time.time() < t_fin:
             try:
                 data = q.get(timeout=max(0.1, t_fin - time.time()))

@@ -90,7 +90,8 @@ def escuchar(
     try:
         with sd.RawInputStream(
             samplerate=SAMPLE_RATE,
-            blocksize=CHUNK,
+            blocksize=CHUNK * 2,
+            latency="high",
             dtype="int16",
             channels=1,
         ) as stream:
@@ -207,7 +208,8 @@ def escuchar_wake_word(
     try:
         with sd.RawInputStream(
             samplerate=SAMPLE_RATE,
-            blocksize=CHUNK,
+            blocksize=CHUNK * 2,
+            latency="high",
             dtype="int16",
             channels=1,
             callback=_callback,
