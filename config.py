@@ -13,9 +13,10 @@ from pathlib import Path
 
 _CONFIG_PATH = Path(__file__).parent / "config.json"
 
-WIFI_ADAPTER:     str | None = None
-BT_ADAPTER:       str | None = None
-TECLA_ACTIVACION: str       = "|"
+WIFI_ADAPTER:      str | None = None
+BT_ADAPTER:        str | None = None
+TECLA_ACTIVACION:  str       = "|"
+STEM_MEDIOS_ACTIVO: bool     = True
 
 
 # ── Detección ──────────────────────────────────────────────────────────────────

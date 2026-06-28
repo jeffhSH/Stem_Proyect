@@ -629,6 +629,11 @@ def texto_a_comando(text: str) -> str | None:
                 _diagnosticar_launch(cmd)
             return cmd
 
+    # 1.5 Macros de medios (antes del fuzzy para no competir con él)
+    from macros import ejecutar_macro_medios  # noqa: PLC0415
+    if ejecutar_macro_medios(text):
+        return None
+
     # 2. Fuzzy matching contra todas las variantes conocidas
     resultado = process.extractOne(text, _VARIANTES_PLANO.keys(), scorer=fuzz.WRatio)
     if resultado is None:

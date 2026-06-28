@@ -1,36 +1,25 @@
 import pyautogui
-from pathlib import Path
+from config import STEM_MEDIOS_ACTIVO
 
-MACROS_PATH = Path(__file__).parent / "macros.json"
-
-# Macros de Spotify
-MACROS = {
-    "spotify": {
-        "pausa":          lambda: pyautogui.press('space'),
-        "siguiente":      lambda: pyautogui.hotkey('ctrl', 'right'),
-        "anterior":       lambda: pyautogui.hotkey('ctrl', 'left'),
-        "volumen subir":  lambda: pyautogui.hotkey('ctrl', 'up'),
-        "volumen bajar":  lambda: pyautogui.hotkey('ctrl', 'down'),
-    }
+VARIANTES_MEDIOS = {
+    "media_anterior":   {"anterior", "canción anterior", "regresa", "regresar"},
+    "media_pausa":      {"pausa", "pausar", "dar play", "reproducir", "continuar"},
+    "media_siguiente":  {"siguiente canción", "siguiente pista", "skip", "saltar"},
 }
 
-# Variantes fonológicas de macros
-VARIANTES_MACROS = {
-    "pausa":         {"pausa", "pausar", "stop", "detener"},
-    "siguiente":     {"siguiente", "next", "cambia", "salta"},
-    "anterior":      {"anterior", "vuelve", "regresa", "atrás"},
-    "volumen subir": {"sube volumen", "más volumen"},
-    "volumen bajar": {"baja volumen", "menos volumen"},
+_ACCIONES = {
+    "media_anterior":   lambda: pyautogui.press('f9'),
+    "media_pausa":      lambda: pyautogui.press('f10'),
+    "media_siguiente":  lambda: pyautogui.press('f11'),
 }
 
 
-def ejecutar_macro(app_activa: str, comando: str) -> bool:
-    """Ejecuta una macro si existe para la app activa. Retorna True si ejecutó."""
-    if app_activa not in MACROS:
+def ejecutar_macro_medios(texto: str) -> bool:
+    if not STEM_MEDIOS_ACTIVO:
         return False
-    for macro, variantes in VARIANTES_MACROS.items():
-        if comando in variantes and macro in MACROS[app_activa]:
-            MACROS[app_activa][macro]()
-            print(f"[macro] {app_activa} -> {macro}")
+    for cmd, variantes in VARIANTES_MEDIOS.items():
+        if any(v in texto for v in variantes):
+            _ACCIONES[cmd]()
+            print(f"[macro] {cmd}")
             return True
     return False
