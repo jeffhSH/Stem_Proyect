@@ -16,13 +16,6 @@ _CHUNK = 4000   # igual que voz.CHUNK
 
 def iniciar() -> None:
     """Muestra el menú de entrenamiento y graba variantes para el comando elegido."""
-    import voz
-
-    model = voz._modelo_activo
-    if model is None:
-        print("[entrenamiento] modelo Vosk no disponible todavía")
-        return
-
     cmds        = list(VARIANTES.keys())
     cmds_medios = list(VARIANTES_MEDIOS.keys())
     n_cmd = len(cmds)
@@ -45,9 +38,19 @@ def iniciar() -> None:
     print()
 
     try:
-        sel = input("Número de comando (0 para cancelar): ").strip()
+        sel = input("Número de comando / E para eliminar (0 cancelar): ").strip()
     except (EOFError, KeyboardInterrupt):
         print("\nCancelado.")
+        return
+
+    if sel.lower() == "e":
+        _eliminar_variante()
+        return
+
+    import voz
+    model = voz._modelo_activo
+    if model is None:
+        print("[entrenamiento] modelo Vosk no disponible todavía")
         return
 
     if not sel.isdigit() or int(sel) == 0:
@@ -164,6 +167,127 @@ def iniciar() -> None:
     else:
         print("\n  Sin variantes nuevas.")
 
+    print("═" * 56 + "\n")
+
+
+def _eliminar_variante() -> None:
+    """Flujo para eliminar una variante de usuario de un comando o macro."""
+    cmds        = list(VARIANTES.keys())
+    cmds_medios = list(VARIANTES_MEDIOS.keys())
+    n_cmd = len(cmds)
+
+    print("\n" + "═" * 56)
+    print("  ELIMINAR VARIANTE — Stem")
+    print("═" * 56)
+    for i, cmd in enumerate(cmds, 1):
+        variantes_str = ", ".join(sorted(VARIANTES[cmd]))
+        if len(variantes_str) > 42:
+            variantes_str = variantes_str[:39] + "..."
+        print(f"  {i:3}. {cmd:<26} {variantes_str}")
+    print()
+    print("  --- MEDIOS ---")
+    for i, cmd in enumerate(cmds_medios, n_cmd + 1):
+        variantes_str = ", ".join(sorted(VARIANTES_MEDIOS[cmd]))
+        if len(variantes_str) > 42:
+            variantes_str = variantes_str[:39] + "..."
+        print(f"  {i:3}. {cmd:<26} {variantes_str}")
+    print()
+
+    try:
+        sel = input("Número de comando (0 para cancelar): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\nCancelado.")
+        return
+
+    if not sel.isdigit() or int(sel) == 0:
+        print("Cancelado.")
+        return
+
+    idx = int(sel) - 1
+    if not (0 <= idx < n_cmd + len(cmds_medios)):
+        print("Número fuera de rango.")
+        return
+
+    es_macro = idx >= n_cmd
+    if es_macro:
+        cmd        = cmds_medios[idx - n_cmd]
+        variantes_actuales = VARIANTES_MEDIOS[cmd]
+        json_path  = USER_MACROS_PATH
+    else:
+        cmd        = cmds[idx]
+        variantes_actuales = VARIANTES[cmd]
+        json_path  = USER_VARIANTS_PATH
+
+    # Determinar qué variantes son de usuario (están en el JSON)
+    variantes_usuario: set[str] = set()
+    if json_path.exists():
+        try:
+            datos = json.loads(json_path.read_text(encoding="utf-8"))
+            variantes_usuario = set(datos.get(cmd, []))
+        except Exception:
+            pass
+
+    variantes_lista = sorted(variantes_actuales)
+    print(f"\n  Variantes de '{cmd}':")
+    for i, v in enumerate(variantes_lista, 1):
+        if v in variantes_usuario:
+            print(f"  {i:3}. {v}")
+        else:
+            print(f"  {i:3}. {v}  (base — no eliminable)")
+    print()
+
+    try:
+        sel2 = input("Número de variante a eliminar (0 para cancelar): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\nCancelado.")
+        return
+
+    if not sel2.isdigit() or int(sel2) == 0:
+        print("Cancelado.")
+        return
+
+    idx2 = int(sel2) - 1
+    if not (0 <= idx2 < len(variantes_lista)):
+        print("Número fuera de rango.")
+        return
+
+    variante = variantes_lista[idx2]
+    if variante not in variantes_usuario:
+        print(f"  '{variante}' es una variante base — no se puede eliminar.")
+        return
+
+    try:
+        conf = input(f"  ¿Eliminar '{variante}' de '{cmd}'? (s/n): ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("\nCancelado.")
+        return
+
+    if conf != "s":
+        print("Cancelado.")
+        return
+
+    # Eliminar de memoria
+    variantes_actuales.discard(variante)
+    if not es_macro and variante in _VARIANTES_PLANO:
+        del _VARIANTES_PLANO[variante]
+
+    # Eliminar del JSON
+    datos: dict[str, list[str]] = {}
+    if json_path.exists():
+        try:
+            datos = json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    if cmd in datos:
+        datos[cmd] = [v for v in datos[cmd] if v != variante]
+        if not datos[cmd]:
+            del datos[cmd]
+        json_path.write_text(
+            json.dumps(datos, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    print(f"\n  Variante '{variante}' eliminada de '{cmd}'.")
     print("═" * 56 + "\n")
 
 
