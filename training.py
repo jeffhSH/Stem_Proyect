@@ -38,19 +38,9 @@ def iniciar() -> None:
     print()
 
     try:
-        sel = input("Número de comando / E para eliminar (0 cancelar): ").strip()
+        sel = input("Número de comando (0 para cancelar): ").strip()
     except (EOFError, KeyboardInterrupt):
         print("\nCancelado.")
-        return
-
-    if sel.lower() == "e":
-        _eliminar_variante()
-        return
-
-    import voz
-    model = voz._modelo_activo
-    if model is None:
-        print("[entrenamiento] modelo Vosk no disponible todavía")
         return
 
     if not sel.isdigit() or int(sel) == 0:
@@ -69,6 +59,26 @@ def iniciar() -> None:
     else:
         cmd                = cmds[idx]
         variantes_actuales = VARIANTES[cmd]
+
+    try:
+        accion = input(f"  [{cmd}] A(gregar) / E(liminar) / 0 cancelar: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("\nCancelado.")
+        return
+
+    if accion == "0":
+        print("Cancelado.")
+        return
+
+    if accion == "e":
+        _eliminar_variante_de(cmd, es_macro, variantes_actuales)
+        return
+
+    import voz
+    model = voz._modelo_activo
+    if model is None:
+        print("[entrenamiento] modelo Vosk no disponible todavía")
+        return
 
     while True:
         try:
@@ -170,53 +180,9 @@ def iniciar() -> None:
     print("═" * 56 + "\n")
 
 
-def _eliminar_variante() -> None:
-    """Flujo para eliminar una variante de usuario de un comando o macro."""
-    cmds        = list(VARIANTES.keys())
-    cmds_medios = list(VARIANTES_MEDIOS.keys())
-    n_cmd = len(cmds)
-
-    print("\n" + "═" * 56)
-    print("  ELIMINAR VARIANTE — Stem")
-    print("═" * 56)
-    for i, cmd in enumerate(cmds, 1):
-        variantes_str = ", ".join(sorted(VARIANTES[cmd]))
-        if len(variantes_str) > 42:
-            variantes_str = variantes_str[:39] + "..."
-        print(f"  {i:3}. {cmd:<26} {variantes_str}")
-    print()
-    print("  --- MEDIOS ---")
-    for i, cmd in enumerate(cmds_medios, n_cmd + 1):
-        variantes_str = ", ".join(sorted(VARIANTES_MEDIOS[cmd]))
-        if len(variantes_str) > 42:
-            variantes_str = variantes_str[:39] + "..."
-        print(f"  {i:3}. {cmd:<26} {variantes_str}")
-    print()
-
-    try:
-        sel = input("Número de comando (0 para cancelar): ").strip()
-    except (EOFError, KeyboardInterrupt):
-        print("\nCancelado.")
-        return
-
-    if not sel.isdigit() or int(sel) == 0:
-        print("Cancelado.")
-        return
-
-    idx = int(sel) - 1
-    if not (0 <= idx < n_cmd + len(cmds_medios)):
-        print("Número fuera de rango.")
-        return
-
-    es_macro = idx >= n_cmd
-    if es_macro:
-        cmd        = cmds_medios[idx - n_cmd]
-        variantes_actuales = VARIANTES_MEDIOS[cmd]
-        json_path  = USER_MACROS_PATH
-    else:
-        cmd        = cmds[idx]
-        variantes_actuales = VARIANTES[cmd]
-        json_path  = USER_VARIANTS_PATH
+def _eliminar_variante_de(cmd: str, es_macro: bool, variantes_actuales: set) -> None:
+    """Flujo para eliminar una variante de usuario del comando ya seleccionado."""
+    json_path = USER_MACROS_PATH if es_macro else USER_VARIANTS_PATH
 
     # Determinar qué variantes son de usuario (están en el JSON)
     variantes_usuario: set[str] = set()
