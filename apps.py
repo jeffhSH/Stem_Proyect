@@ -146,11 +146,9 @@ def _bloquear() -> None:
 def _esperar_confirmacion_voz() -> bool:
     """Escucha 6 s con Vosk esperando 'confirmar'. Retorna True si se confirma."""
     import json as _json
-    import sys
     import vosk
     import sounddevice as sd
     import voz as _voz
-    _wasapi = sd.WasapiSettings(auto_convert=True) if sys.platform == "win32" and hasattr(sd, "WasapiSettings") else None
 
     try:
         vosk.SetLogLevel(-1)
@@ -168,7 +166,7 @@ def _esperar_confirmacion_voz() -> bool:
         q.put(bytes(indata))
 
     with sd.RawInputStream(samplerate=_voz.SAMPLE_RATE, blocksize=8000, latency="high",
-                           dtype="int16", channels=1, extra_settings=_wasapi, callback=_cb):
+                           dtype="int16", channels=1, device=_voz._WASAPI_DEVICE, callback=_cb):
         while time.time() < t_fin:
             try:
                 data = q.get(timeout=max(0.1, t_fin - time.time()))

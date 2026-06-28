@@ -16,8 +16,29 @@ MODEL_PATH     = "vosk-model-small-es-0.42"
 SAMPLE_RATE    = 16000
 CHUNK          = 4000
 WAKE_WORDS     = ["stem", "estén", "stein", "steam", "stand", "steve", "están", "sten", "esteam", "stern"]
-_WASAPI        = sd.WasapiSettings(auto_convert=True) if sys.platform == "win32" and hasattr(sd, "WasapiSettings") else None
 TIMEOUT_ACTIVO = 6.0
+
+
+def _get_wasapi_device() -> int | None:
+    """Busca el dispositivo de entrada usando WASAPI. Retorna None si no encuentra."""
+    try:
+        devices  = sd.query_devices()
+        hostapis = sd.query_hostapis()
+        wasapi_index = next(
+            (i for i, h in enumerate(hostapis) if "WASAPI" in h["name"]),
+            None,
+        )
+        if wasapi_index is None:
+            return None
+        for i, d in enumerate(devices):
+            if d["hostapi"] == wasapi_index and d["max_input_channels"] > 0:
+                return i
+    except Exception:
+        return None
+    return None
+
+
+_WASAPI_DEVICE = _get_wasapi_device()
 
 # Modelo cargado (accesible por training.py sin recarga)
 _modelo_activo: vosk.Model | None = None
@@ -95,7 +116,7 @@ def escuchar(
             latency="high",
             dtype="int16",
             channels=1,
-            extra_settings=_WASAPI,
+            device=_WASAPI_DEVICE,
         ) as stream:
             while True:
                 data, _overflow = stream.read(CHUNK)
@@ -214,7 +235,7 @@ def escuchar_wake_word(
             latency="high",
             dtype="int16",
             channels=1,
-            extra_settings=_WASAPI,
+            device=_WASAPI_DEVICE,
             callback=_callback,
         ):
             while True:

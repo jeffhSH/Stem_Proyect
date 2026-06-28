@@ -1,5 +1,4 @@
 import re
-import sys as _sys
 import threading as _threading
 import time as _time
 
@@ -286,7 +285,7 @@ def _hilo_ajuste(tipo: str) -> None:
     import queue as _queue
     import sounddevice as _sd
     import vosk as _vosk
-    _wasapi = _sd.WasapiSettings(auto_convert=True) if _sys.platform == "win32" and hasattr(_sd, "WasapiSettings") else None
+    from voz import _WASAPI_DEVICE as _wasapi_dev  # noqa: PLC0415
 
     try:
         model = _get_vosk_model()
@@ -307,7 +306,7 @@ def _hilo_ajuste(tipo: str) -> None:
     try:
         with _sd.RawInputStream(samplerate=_SAMPLE_RATE, blocksize=_CHUNK * 2,
                                 latency="high", dtype="int16", channels=1,
-                                extra_settings=_wasapi, callback=_cb):
+                                device=_wasapi_dev, callback=_cb):
             while _time.time() < _modo["t_fin"]:
                 try:
                     data = q.get(timeout=0.5)
@@ -405,7 +404,7 @@ def _hilo_navegar() -> None:
     import sounddevice as _sd
     import vosk as _vosk
     import pyautogui as _pyautogui
-    _wasapi = _sd.WasapiSettings(auto_convert=True) if _sys.platform == "win32" and hasattr(_sd, "WasapiSettings") else None
+    from voz import _WASAPI_DEVICE as _wasapi_dev  # noqa: PLC0415
 
     try:
         model = _get_vosk_model()
@@ -450,7 +449,7 @@ def _hilo_navegar() -> None:
     try:
         with _sd.RawInputStream(samplerate=_SAMPLE_RATE, blocksize=_CHUNK * 2,
                                 latency="high", dtype="int16", channels=1,
-                                extra_settings=_wasapi, callback=_cb):
+                                device=_wasapi_dev, callback=_cb):
             _parcial_actuado = ""
             while _time.time() < _modo["t_fin"]:
                 try:
