@@ -29,7 +29,6 @@ VARIANTES: dict[str, set[str]] = {
     "vscode":            {"vscode", "viscode", "vs code", "visual studio"},
     "claude":            {"claude", "clawd", "clod"},
     "obs studio":        {"obs", "obs studio", "stream"},
-    "steam":             {"steam app", "juegos steam", "plataforma steam"},
     "vlc":               {"vlc", "reproductor"},
     "discord":           {"discord"},
     "libreoffice":       {"libreoffice", "libre office", "writer"},
@@ -44,7 +43,6 @@ VARIANTES: dict[str, set[str]] = {
     "mspaint":                 {"paint", "pintura"},
     "snippingtool":            {"recortes", "snipping", "captura herramienta"},
     "calculator":              {"calculadora", "calculator"},
-    "ms-teams":                {"teams", "microsoft teams"},
     "zoom":                    {"zoom"},
     "codeblocks":              {"codeblocks", "code blocks"},
     "postgres":                {"postgresql", "postgres"},
@@ -475,7 +473,7 @@ def _hilo_navegar() -> None:
 
                 if rec.AcceptWaveform(data):
                     texto = _json.loads(rec.Result()).get("text", "").strip()
-                    if texto and texto != _parcial_actuado:
+                    if texto and not _parcial_actuado:
                         subcmd = _subcmd_navegar(texto)
                         if subcmd and _ejecutar(subcmd):
                             break
