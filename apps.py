@@ -192,6 +192,54 @@ def _apagar_sistema() -> None:
         subprocess.run(["shutdown", "/s", "/t", "0"])
 
 
+# ── Foco de ventana existente ─────────────────────────────────────────────────
+
+def _proceso_corriendo_y_enfocar(nombre: str, ruta: str) -> bool:
+    """
+    Verifica si la app ya está corriendo y enfoca su ventana.
+    Retorna True si encontró y enfocó la ventana; False para que el llamador la abra.
+    """
+    try:
+        import psutil           # noqa: PLC0415
+        import pygetwindow as gw  # noqa: PLC0415
+
+        exe_stem = Path(ruta).stem.lower() if ruta else nombre.lower()
+        candidatos = {exe_stem, nombre.lower()}
+
+        corriendo = False
+        for proc in psutil.process_iter(["name"]):
+            try:
+                if proc.info["name"].lower().split(".")[0] in candidatos:
+                    corriendo = True
+                    break
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        if not corriendo:
+            return False
+
+        nombre_lower = nombre.lower()
+        ventanas = [
+            v for v in gw.getAllWindows()
+            if v.title and (nombre_lower in v.title.lower() or exe_stem in v.title.lower())
+        ]
+        if not ventanas:
+            return False
+
+        v = ventanas[0]
+        if v.isMinimized:
+            v.restore()
+        v.activate()
+        print(f"[apps] '{nombre}' ya abierto — enfocando ventana")
+        return True
+
+    except ImportError as e:
+        print(f"[focus] módulo no disponible: {e}")
+    except Exception as e:
+        print(f"[focus] error al enfocar: {e}")
+    return False
+
+
 _ACCIONES_SISTEMA = {
     "minimizar":       _minimizar,
     "cambiar_ventana": _skip,
@@ -316,6 +364,9 @@ def iniciar_watcher() -> None:
 
 def launch(nombre: str) -> bool:
     """Ejecuta el comando. Retorna True si el programa debe cerrarse."""
+    forzar_nueva = nombre.startswith("nueva:")
+    if forzar_nueva:
+        nombre = nombre[len("nueva:"):]
     nombre = nombre.lower()
     print(f"\n{MENSAJES.get(nombre, f'Ejecutando {nombre}...')}\n")
 
@@ -336,9 +387,20 @@ def launch(nombre: str) -> bool:
             webbrowser.open(valor[len(_URL_PREFIX):])
             return False
         if Path(valor).exists():
+            if not forzar_nueva and _proceso_corriendo_y_enfocar(nombre, valor):
+                return False
             os.startfile(valor)
             return False
         # El path en caché ya no existe; cae al fallback
+
+    # Fallback directo para Brave si no está en caché
+    if nombre == "brave":
+        brave = Path(BRAVE_PATH)
+        if brave.exists():
+            if not forzar_nueva and _proceso_corriendo_y_enfocar("brave", str(brave)):
+                return False
+            subprocess.Popen([str(brave)])
+            return False
 
     if nombre in STORE_APPS:
         os.startfile(f"shell:AppsFolder\\{STORE_APPS[nombre]}")

@@ -17,3 +17,6 @@ config.json
 
 # Variables de entorno (claves secretas)
 .env
+
+# Variantes fonológicas aprendidas por el usuario (generadas en tiempo de ejecución)
+user_variants.json

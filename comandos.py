@@ -90,6 +90,9 @@ VARIANTES: dict[str, set[str]] = {
                         "sube el volumen", "aumenta volumen"},
     "volumen_bajar":   {"bajar volumen", "baja volumen", "menos volumen",
                         "baja el volumen", "reduce volumen"},
+    "volumen_mute":    {"mutear", "mute", "silencio", "muy tea", "sin sonido", "quitar sonido"},
+    # ── Apps con fallback directo ─────────────────────────────────────────────────
+    "brave":           {"brave", "bravo", "brave browser"},
 }
 
 # Mapa plano variante → comando canónico para fuzzy matching
@@ -103,8 +106,9 @@ _COMANDOS_SISTEMA   = {"apagar_pantalla", "apagar_sistema", "bloquear", "reinici
 _COMANDOS_CONTINUOS = {"brillo_subir", "brillo_bajar", "volumen_subir", "volumen_bajar"}
 _COMANDOS_NAVEGAR   = {"navegar"}
 _COMANDOS_WIFI      = {"wifi_apagar", "wifi_encender"}
-_COMANDOS_BLUETOOTH = {"bluetooth_apagar", "bluetooth_encender"}
-_COMANDOS_VENTANA   = {"cambiar_ventana", "minimizar"}   # ejecutados directo con pyautogui/ctypes
+_COMANDOS_BLUETOOTH     = {"bluetooth_apagar", "bluetooth_encender"}
+_COMANDOS_VENTANA       = {"cambiar_ventana", "minimizar"}
+_COMANDOS_SISTEMA_AUDIO = {"volumen_mute"}
 _COMANDOS_APPS = (
     set(VARIANTES.keys())
     - _COMANDOS_SISTEMA
@@ -113,6 +117,7 @@ _COMANDOS_APPS = (
     - _COMANDOS_WIFI
     - _COMANDOS_BLUETOOTH
     - _COMANDOS_VENTANA
+    - _COMANDOS_SISTEMA_AUDIO
     - {"salir"}
 )
 
@@ -370,20 +375,42 @@ def _activar_continuo(cmd: str) -> None:
 
 # ── Navegación de ventanas ────────────────────────────────────────────────────
 
+GRAMMAR_NAVEGAR = (
+    '["siguiente", "anterior", "abrir", "vuelve", "atrás", "atras", '
+    '"uno", "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve", "diez", "[unk]"]'
+)
+
+NUMEROS_NAVEGAR: dict[str, int] = {
+    "uno": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5,
+    "seis": 6, "siete": 7, "ocho": 8, "nueve": 9, "diez": 10,
+}
+
+# Conjunto de palabras válidas del grammar (para filtrar parciales)
+_GRAMMAR_NAVEGAR_PALABRAS: frozenset[str] = frozenset(NUMEROS_NAVEGAR) | {
+    "siguiente", "anterior", "abrir", "vuelve", "atrás", "atras",
+}
+
+
 def _subcmd_navegar(text: str) -> str | None:
-    """Detecta sub-comando de navegación. Exacto primero, luego fuzzy al 50%."""
-    for variantes in _SUBCMDS_NAVEGAR.values():
-        for v in variantes:
-            if v in text:
-                return _SUBCMDS_NAVEGAR_PLANO[v]
-    resultado = process.extractOne(text, _SUBCMDS_NAVEGAR_PLANO.keys(), scorer=fuzz.WRatio)
-    if resultado and resultado[1] >= _UMBRAL_SUB:
-        return _SUBCMDS_NAVEGAR_PLANO[resultado[0]]
+    """
+    Detecta sub-comando de navegación por substring directo contra el grammar.
+    Sin fuzzy — Vosk ya filtra por gramática restringida.
+    Devuelve la palabra del número (ej. 'cuatro') para que el llamador la mapee.
+    """
+    for num in NUMEROS_NAVEGAR:
+        if num in text:
+            return num
+    if "siguiente" in text:
+        return "siguiente"
+    if any(p in text for p in ("anterior", "vuelve", "atrás", "atras")):
+        return "anterior"
+    if "abrir" in text:
+        return "abrir"
     return None
 
 
 def _hilo_navegar() -> None:
-    """Mantiene Alt presionado y navega ventanas con sub-comandos de voz."""
+    """Mantiene Alt presionado y navega ventanas con sub-comandos de voz por grammar."""
     import json as _json
     import queue as _queue
     import sounddevice as _sd
@@ -392,7 +419,7 @@ def _hilo_navegar() -> None:
 
     try:
         model = _get_vosk_model()
-        rec   = _vosk.KaldiRecognizer(model, _SAMPLE_RATE)
+        rec   = _vosk.KaldiRecognizer(model, _SAMPLE_RATE, GRAMMAR_NAVEGAR)
     except Exception as e:
         print(f"[navegar] error con modelo Vosk: {e}")
         if _modo["tipo"] == "navegar":
@@ -404,40 +431,65 @@ def _hilo_navegar() -> None:
     def _cb(indata, frames, time_info, status):
         q.put(bytes(indata))
 
+    def _ejecutar(cmd: str) -> bool:
+        """Ejecuta el sub-comando. Retorna True si el hilo debe terminar."""
+        if cmd == "siguiente":
+            _pyautogui.press('tab')
+            _modo["t_fin"] = _time.time() + _TIMEOUT_NAVEGAR
+        elif cmd == "anterior":
+            _pyautogui.keyDown('shift')
+            _pyautogui.press('tab')
+            _pyautogui.keyUp('shift')
+            _modo["t_fin"] = _time.time() + _TIMEOUT_NAVEGAR
+        elif cmd in NUMEROS_NAVEGAR:
+            n = NUMEROS_NAVEGAR[cmd]
+            # Suelta Alt → Alt+Tab (pos 1) → Tab × (n-1) → suelta Alt
+            _pyautogui.keyUp('alt')
+            _time.sleep(0.05)
+            _pyautogui.keyDown('alt')
+            _pyautogui.press('tab')
+            for _ in range(n - 1):
+                _pyautogui.press('tab')
+            _pyautogui.keyUp('alt')
+            return True
+        elif cmd == "abrir":
+            return True
+        return False
+
     _pyautogui.keyDown('alt')
     _pyautogui.press('tab')
-    print(f"[navegar] Alt sostenido — di 'siguiente', 'anterior' o 'abrir' ({int(_TIMEOUT_NAVEGAR)} s)")
+    print(
+        f"[navegar] Alt sostenido — di 'siguiente', 'anterior', número o 'abrir' "
+        f"({int(_TIMEOUT_NAVEGAR)} s)"
+    )
 
     try:
         with _sd.RawInputStream(samplerate=_SAMPLE_RATE, blocksize=_CHUNK,
                                 dtype="int16", channels=1, callback=_cb):
+            _parcial_actuado = ""
             while _time.time() < _modo["t_fin"]:
                 try:
                     data = q.get(timeout=0.5)
                 except _queue.Empty:
                     continue
 
-                if not rec.AcceptWaveform(data):
-                    continue  # solo resultados finales
-
-                texto = _json.loads(rec.Result()).get("text", "").lower().strip()
-                if not texto:
-                    continue
-
-                subcmd = _subcmd_navegar(texto)
-                if not subcmd:
-                    continue
-
-                if subcmd == "siguiente":
-                    _pyautogui.press('tab')
-                    _modo["t_fin"] = _time.time() + _TIMEOUT_NAVEGAR
-                elif subcmd == "anterior":
-                    _pyautogui.keyDown('shift')
-                    _pyautogui.press('tab')
-                    _pyautogui.keyUp('shift')
-                    _modo["t_fin"] = _time.time() + _TIMEOUT_NAVEGAR
-                elif subcmd == "abrir":
-                    break
+                if rec.AcceptWaveform(data):
+                    texto = _json.loads(rec.Result()).get("text", "").strip()
+                    if texto and texto != _parcial_actuado:
+                        subcmd = _subcmd_navegar(texto)
+                        if subcmd and _ejecutar(subcmd):
+                            break
+                    _parcial_actuado = ""  # siempre resetear al cerrar utterance
+                else:
+                    parcial = _json.loads(rec.PartialResult()).get("partial", "").strip()
+                    if (parcial
+                            and parcial in _GRAMMAR_NAVEGAR_PALABRAS
+                            and parcial != _parcial_actuado):
+                        subcmd = _subcmd_navegar(parcial)
+                        if subcmd:
+                            _parcial_actuado = parcial
+                            if _ejecutar(subcmd):
+                                break
 
     except Exception as e:
         print(f"[navegar] error en stream: {e}")
@@ -474,23 +526,43 @@ def _cmd_bluetooth(encender: bool) -> None:
     pass
 
 
+# ── Mute de volumen maestro ───────────────────────────────────────────────────
+
+def _cmd_mute() -> None:
+    try:
+        from pycaw.pycaw import AudioUtilities  # noqa: PLC0415
+        device = AudioUtilities.GetSpeakers()
+        volume = device.EndpointVolume
+        actual = volume.GetMute()
+        volume.SetMute(not actual, None)
+        print(f"[mute] {'silenciado' if not actual else 'con sonido'}")
+    except Exception as e:
+        print(f"[mute] error: {e}")
+
+
 # ── Detección de intención de apertura ────────────────────────────────────────
 
 # Ordenadas por longitud descendente para que "abre el" tenga prioridad sobre "abre"
 _PALABRAS_APERTURA: list[str] = sorted(
-    ["abre", "abrir", "abre el", "abre la", "pon", "lanza", "ejecuta", "abre los"],
+    ["abre", "abrir", "abre el", "abre la", "pon", "lanza", "ejecuta", "abre los",
+     "nueva pestaña"],
     key=len, reverse=True,
 )
+_PALABRAS_NUEVA_INSTANCIA = {"nueva pestaña"}
 
 
-def _detectar_intencion_apertura(texto: str) -> str | None:
-    """Si el texto empieza con una palabra de apertura, retorna el resto como nombre de app."""
+def _detectar_intencion_apertura(texto: str) -> tuple[str | None, bool]:
+    """
+    Si el texto empieza con una palabra de apertura, retorna (nombre_app, forzar_nueva).
+    forzar_nueva=True indica abrir nueva instancia aunque la app ya esté abierta.
+    """
     for palabra in _PALABRAS_APERTURA:
         if texto.startswith(palabra) and (
             len(texto) == len(palabra) or texto[len(palabra)] == " "
         ):
-            return texto[len(palabra):].strip()
-    return None
+            nombre = texto[len(palabra):].strip() or None
+            return nombre, palabra in _PALABRAS_NUEVA_INSTANCIA
+    return None, False
 
 
 def _buscar_en_cache_directo(nombre: str) -> str | None:
@@ -536,18 +608,19 @@ def texto_a_comando(text: str) -> str | None:
         return None
 
     # 0. Detección de intención de apertura ("abre ...", "lanza ...", etc.)
-    nombre_app = _detectar_intencion_apertura(text)
+    nombre_app, forzar_nueva = _detectar_intencion_apertura(text)
     if nombre_app:
         clave = _buscar_en_cache_directo(nombre_app)
         if clave:
             _diagnosticar_launch(clave)
-            return clave
+            return f"nueva:{clave}" if forzar_nueva else clave
         # Sin coincidencia suficiente → continúa con lógica normal
 
     # 1. Coincidencia exacta por substring (orden del dict importa)
     for cmd, variantes in VARIANTES.items():
         if any(v in text for v in variantes):
             if cmd in _COMANDOS_CONTINUOS:
+                print(f"[debug] texto='{text}' cmd='{cmd}'")
                 pct = extraer_porcentaje(text)
                 if pct is not None:
                     _aplicar_porcentaje_directo(cmd, pct)
@@ -562,6 +635,9 @@ def texto_a_comando(text: str) -> str | None:
                 return None
             if cmd in _COMANDOS_BLUETOOTH:
                 _cmd_bluetooth(cmd == "bluetooth_encender")
+                return None
+            if cmd in _COMANDOS_SISTEMA_AUDIO:
+                _cmd_mute()
                 return None
             if cmd in _COMANDOS_APPS:
                 _diagnosticar_launch(cmd)
@@ -580,6 +656,7 @@ def texto_a_comando(text: str) -> str | None:
 
     if similitud >= 80:
         if cmd in _COMANDOS_CONTINUOS:
+            print(f"[debug] texto='{text}' cmd='{cmd}'")
             pct = extraer_porcentaje(text)
             if pct is not None:
                 _aplicar_porcentaje_directo(cmd, pct)
@@ -594,6 +671,9 @@ def texto_a_comando(text: str) -> str | None:
             return None
         if cmd in _COMANDOS_BLUETOOTH:
             _cmd_bluetooth(cmd == "bluetooth_encender")
+            return None
+        if cmd in _COMANDOS_SISTEMA_AUDIO:
+            _cmd_mute()
             return None
         if cmd in _COMANDOS_APPS:
             _diagnosticar_launch(cmd)
@@ -602,6 +682,7 @@ def texto_a_comando(text: str) -> str | None:
     if similitud >= umbral:
         print(f"[fuzzy] entendí: '{text}' → ejecutando: '{cmd}'")
         if cmd in _COMANDOS_CONTINUOS:
+            print(f"[debug] texto='{text}' cmd='{cmd}'")
             pct = extraer_porcentaje(text)
             if pct is not None:
                 _aplicar_porcentaje_directo(cmd, pct)
@@ -616,6 +697,9 @@ def texto_a_comando(text: str) -> str | None:
             return None
         if cmd in _COMANDOS_BLUETOOTH:
             _cmd_bluetooth(cmd == "bluetooth_encender")
+            return None
+        if cmd in _COMANDOS_SISTEMA_AUDIO:
+            _cmd_mute()
             return None
         if cmd in _COMANDOS_APPS:
             _diagnosticar_launch(cmd)
