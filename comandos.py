@@ -78,15 +78,9 @@ VARIANTES: dict[str, set[str]] = {
     "salir":           {"salir", "exit", "cerrar stem"},
     # ── Navegación de ventanas ────────────────────────────────────────────────
     "navegar":         {"navegar", "navega"},
-    # ── Continuos — brillo ────────────────────────────────────────────────────
-    "brillo_subir":    {"subir brillo", "sube brillo", "más brillo", "mas brillo",
-                        "sube el brillo", "aumenta brillo"},
-    "brillo_bajar":    {"bajar brillo", "baja brillo", "menos brillo",
-                        "baja el brillo", "reduce brillo"},
-    # ── Continuos — volumen ───────────────────────────────────────────────────
-    # "sonido" es sinónimo coloquial de "volumen"; se añade para evitar que fuzzy
-    # prefiera brillo_bajar sobre volumen_bajar cuando el usuario dice "bajar sonido"
-    # (brillo/sonido comparten más chars que volumen/sonido → falso positivo sin esto)
+    # ── Continuos — volumen (va ANTES que brillo para que el substring loop
+    #    priorice "volumen"/"sonido" sobre "brillo" sin depender del fuzzy) ───
+    # "sonido" es sinónimo coloquial de "volumen"; evita falsos positivos en fuzzy
     "volumen_subir":   {"subir volumen", "sube volumen", "más volumen", "mas volumen",
                         "sube el volumen", "aumenta volumen",
                         "subir sonido", "sube sonido", "más sonido", "mas sonido",
@@ -96,6 +90,11 @@ VARIANTES: dict[str, set[str]] = {
                         "bajar sonido", "baja sonido", "menos sonido",
                         "baja el sonido", "reduce sonido"},
     "volumen_mute":    {"mutear", "mute", "silencio", "muy tea", "sin sonido", "quitar sonido"},
+    # ── Continuos — brillo ────────────────────────────────────────────────────
+    "brillo_subir":    {"subir brillo", "sube brillo", "más brillo", "mas brillo",
+                        "sube el brillo", "aumenta brillo"},
+    "brillo_bajar":    {"bajar brillo", "baja brillo", "menos brillo",
+                        "baja el brillo", "reduce brillo"},
     # ── Apps con fallback directo ─────────────────────────────────────────────────
     "brave":           {"brave", "bravo", "brave browser"},
 }
