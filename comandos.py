@@ -111,6 +111,7 @@ _COMANDOS_CONTINUOS = {"brillo_subir", "brillo_bajar", "volumen_subir", "volumen
 _COMANDOS_NAVEGAR   = {"navegar"}
 _COMANDOS_WIFI      = {"wifi_apagar", "wifi_encender"}
 _COMANDOS_BLUETOOTH     = {"bluetooth_apagar", "bluetooth_encender"}
+_COMANDOS_MACROS        = {"minimizar", "cambiar_ventana", "bloquear", "volumen_mute"}
 _COMANDOS_APPS = (
     set(VARIANTES.keys())
     - _COMANDOS_SISTEMA
@@ -118,6 +119,7 @@ _COMANDOS_APPS = (
     - _COMANDOS_NAVEGAR
     - _COMANDOS_WIFI
     - _COMANDOS_BLUETOOTH
+    - _COMANDOS_MACROS
     - {"salir"}
 )
 
@@ -607,6 +609,8 @@ def _despachar(cmd: str, texto: str) -> str | None:
     if cmd in _COMANDOS_BLUETOOTH:
         _cmd_bluetooth(cmd == "bluetooth_encender")
         return None
+    if cmd in _COMANDOS_MACROS:
+        return cmd
     if cmd in _COMANDOS_APPS:
         _diagnosticar_launch(cmd)
     return cmd
