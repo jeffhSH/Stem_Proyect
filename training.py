@@ -1,5 +1,6 @@
 """Modo entrenamiento de Stem: graba variantes fonológicas y las persiste."""
 import json
+import sys
 import threading
 from pathlib import Path
 
@@ -11,7 +12,8 @@ from comandos import VARIANTES, _VARIANTES_PLANO
 from macros import VARIANTES_MEDIOS, USER_MACROS_PATH
 
 USER_VARIANTS_PATH = Path(__file__).parent / "user_variants.json"
-_CHUNK = 4000   # igual que voz.CHUNK
+_CHUNK  = 4000   # igual que voz.CHUNK
+_WASAPI = sd.WasapiSettings(auto_convert=True) if sys.platform == "win32" and hasattr(sd, "WasapiSettings") else None
 
 
 def iniciar() -> None:
@@ -129,6 +131,7 @@ def iniciar() -> None:
             latency="high",
             dtype="int16",
             channels=1,
+            extra_settings=_WASAPI,
             callback=_audio_cb,
         ):
             with _kb.Listener(on_press=on_press, on_release=on_release):

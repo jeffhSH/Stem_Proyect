@@ -16,6 +16,7 @@ MODEL_PATH     = "vosk-model-small-es-0.42"
 SAMPLE_RATE    = 16000
 CHUNK          = 4000
 WAKE_WORDS     = ["stem", "estén", "stein", "steam", "stand", "steve", "están", "sten", "esteam", "stern"]
+_WASAPI        = sd.WasapiSettings(auto_convert=True) if sys.platform == "win32" and hasattr(sd, "WasapiSettings") else None
 TIMEOUT_ACTIVO = 6.0
 
 # Modelo cargado (accesible por training.py sin recarga)
@@ -94,6 +95,7 @@ def escuchar(
             latency="high",
             dtype="int16",
             channels=1,
+            extra_settings=_WASAPI,
         ) as stream:
             while True:
                 data, _overflow = stream.read(CHUNK)
@@ -212,6 +214,7 @@ def escuchar_wake_word(
             latency="high",
             dtype="int16",
             channels=1,
+            extra_settings=_WASAPI,
             callback=_callback,
         ):
             while True:
