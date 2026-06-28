@@ -165,8 +165,7 @@ def _esperar_confirmacion_voz() -> bool:
     def _cb(indata, frames, time_info, status):
         q.put(bytes(indata))
 
-    with sd.RawInputStream(samplerate=_voz.SAMPLE_RATE, blocksize=8000, latency="high",
-                           dtype="int16", channels=1, device=_voz._WASAPI_DEVICE, callback=_cb):
+    with sd.RawInputStream(**_voz._INPUT_STREAM_KWARGS, callback=_cb):
         while time.time() < t_fin:
             try:
                 data = q.get(timeout=max(0.1, t_fin - time.time()))

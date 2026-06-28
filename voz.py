@@ -19,26 +19,42 @@ WAKE_WORDS     = ["stem", "estén", "stein", "steam", "stand", "steve", "están"
 TIMEOUT_ACTIVO = 6.0
 
 
-def _get_wasapi_device() -> int | None:
-    """Busca el dispositivo de entrada usando WASAPI. Retorna None si no encuentra."""
-    try:
-        devices  = sd.query_devices()
-        hostapis = sd.query_hostapis()
-        wasapi_index = next(
-            (i for i, h in enumerate(hostapis) if "WASAPI" in h["name"]),
-            None,
-        )
-        if wasapi_index is None:
-            return None
-        for i, d in enumerate(devices):
-            if d["hostapi"] == wasapi_index and d["max_input_channels"] > 0:
-                return i
-    except Exception:
-        return None
-    return None
+def _get_input_stream_kwargs() -> dict:
+    """Retorna kwargs para RawInputStream; en Windows fuerza WASAPI con auto_convert."""
+    kwargs: dict = {
+        "samplerate": SAMPLE_RATE,
+        "blocksize":  8000,
+        "latency":    "high",
+        "dtype":      "int16",
+        "channels":   1,
+    }
+    if sys.platform == "win32" and hasattr(sd, "WasapiSettings"):
+        try:
+            hostapis = sd.query_hostapis()
+            devices  = sd.query_devices()
+            wasapi_idx = next(
+                (i for i, h in enumerate(hostapis) if "WASAPI" in h["name"]),
+                None,
+            )
+            if wasapi_idx is not None:
+                wasapi_device = next(
+                    (i for i, d in enumerate(devices)
+                     if d["hostapi"] == wasapi_idx and d["max_input_channels"] > 0),
+                    None,
+                )
+                if wasapi_device is not None:
+                    kwargs["device"]         = wasapi_device
+                    kwargs["extra_settings"] = sd.WasapiSettings(
+                        exclusive=False,
+                        auto_convert=True,
+                    )
+                    print(f"[audio] WASAPI device #{wasapi_device} con auto_convert")
+        except Exception as e:
+            print(f"[audio] WASAPI no disponible, usando default: {e}")
+    return kwargs
 
 
-_WASAPI_DEVICE = _get_wasapi_device()
+_INPUT_STREAM_KWARGS = _get_input_stream_kwargs()
 
 # Modelo cargado (accesible por training.py sin recarga)
 _modelo_activo: vosk.Model | None = None
@@ -110,14 +126,7 @@ def escuchar(
     print("Escuchando... Ctrl+C para salir.\n")
 
     try:
-        with sd.RawInputStream(
-            samplerate=SAMPLE_RATE,
-            blocksize=CHUNK * 2,
-            latency="high",
-            dtype="int16",
-            channels=1,
-            device=_WASAPI_DEVICE,
-        ) as stream:
+        with sd.RawInputStream(**_INPUT_STREAM_KWARGS) as stream:
             while True:
                 data, _overflow = stream.read(CHUNK)
 
@@ -229,15 +238,7 @@ def escuchar_wake_word(
     print("Presioná T para entrar al modo entrenamiento.\n")
 
     try:
-        with sd.RawInputStream(
-            samplerate=SAMPLE_RATE,
-            blocksize=CHUNK * 2,
-            latency="high",
-            dtype="int16",
-            channels=1,
-            device=_WASAPI_DEVICE,
-            callback=_callback,
-        ):
+        with sd.RawInputStream(**_INPUT_STREAM_KWARGS, callback=_callback):
             while True:
                 # Activación/extensión de ventana por tecla |
                 if _tecla_activa.is_set():

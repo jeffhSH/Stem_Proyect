@@ -285,7 +285,7 @@ def _hilo_ajuste(tipo: str) -> None:
     import queue as _queue
     import sounddevice as _sd
     import vosk as _vosk
-    from voz import _WASAPI_DEVICE as _wasapi_dev  # noqa: PLC0415
+    from voz import _INPUT_STREAM_KWARGS as _stream_kw  # noqa: PLC0415
 
     try:
         model = _get_vosk_model()
@@ -304,9 +304,7 @@ def _hilo_ajuste(tipo: str) -> None:
     print(f"[{tipo}] modo ajuste — di 'más'/'menos' o 'listo' ({int(_TIMEOUT_AJUSTE)} s)")
 
     try:
-        with _sd.RawInputStream(samplerate=_SAMPLE_RATE, blocksize=_CHUNK * 2,
-                                latency="high", dtype="int16", channels=1,
-                                device=_wasapi_dev, callback=_cb):
+        with _sd.RawInputStream(**_stream_kw, callback=_cb):
             while _time.time() < _modo["t_fin"]:
                 try:
                     data = q.get(timeout=0.5)
@@ -404,7 +402,7 @@ def _hilo_navegar() -> None:
     import sounddevice as _sd
     import vosk as _vosk
     import pyautogui as _pyautogui
-    from voz import _WASAPI_DEVICE as _wasapi_dev  # noqa: PLC0415
+    from voz import _INPUT_STREAM_KWARGS as _stream_kw  # noqa: PLC0415
 
     try:
         model = _get_vosk_model()
@@ -447,9 +445,7 @@ def _hilo_navegar() -> None:
     print(f"[navegar] Alt sostenido — di 'siguiente', 'anterior' o 'abrir' ({int(_TIMEOUT_NAVEGAR)} s)")
 
     try:
-        with _sd.RawInputStream(samplerate=_SAMPLE_RATE, blocksize=_CHUNK * 2,
-                                latency="high", dtype="int16", channels=1,
-                                device=_wasapi_dev, callback=_cb):
+        with _sd.RawInputStream(**_stream_kw, callback=_cb):
             _parcial_actuado = ""
             while _time.time() < _modo["t_fin"]:
                 try:

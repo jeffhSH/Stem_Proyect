@@ -123,15 +123,7 @@ def iniciar() -> None:
     nuevas: set[str] = set()
 
     try:
-        with sd.RawInputStream(
-            samplerate=voz.SAMPLE_RATE,
-            blocksize=_CHUNK * 2,
-            latency="high",
-            dtype="int16",
-            channels=1,
-            device=voz._WASAPI_DEVICE,
-            callback=_audio_cb,
-        ):
+        with sd.RawInputStream(**voz._INPUT_STREAM_KWARGS, callback=_audio_cb):
             with _kb.Listener(on_press=on_press, on_release=on_release):
                 for i in range(1, repeticiones + 1):
                     if _esc.is_set():
