@@ -592,6 +592,33 @@ def _diagnosticar_launch(cmd: str) -> None:
 
 # ── Texto → comando (interfaz pública) ────────────────────────────────────────
 
+def _despachar(cmd: str, texto: str) -> str | None:
+    """Ejecuta el efecto lateral del comando y retorna cmd (o None si ya fue manejado)."""
+    if cmd in _COMANDOS_CONTINUOS:
+        print(f"[debug] texto='{texto}' cmd='{cmd}'")
+        pct = extraer_porcentaje(texto)
+        if pct is not None:
+            _aplicar_porcentaje_directo(cmd, pct)
+        else:
+            _activar_continuo(cmd)
+        return None
+    if cmd in _COMANDOS_NAVEGAR:
+        _activar_navegar()
+        return None
+    if cmd in _COMANDOS_WIFI:
+        _cmd_wifi(cmd == "wifi_encender")
+        return None
+    if cmd in _COMANDOS_BLUETOOTH:
+        _cmd_bluetooth(cmd == "bluetooth_encender")
+        return None
+    if cmd in _COMANDOS_SISTEMA_AUDIO:
+        _cmd_mute()
+        return None
+    if cmd in _COMANDOS_APPS:
+        _diagnosticar_launch(cmd)
+    return cmd
+
+
 def texto_a_comando(text: str) -> str | None:
     """Retorna el nombre canónico del primer comando detectado, o None."""
 
@@ -611,29 +638,7 @@ def texto_a_comando(text: str) -> str | None:
     # 1. Coincidencia exacta por substring (orden del dict importa)
     for cmd, variantes in VARIANTES.items():
         if any(v in text for v in variantes):
-            if cmd in _COMANDOS_CONTINUOS:
-                print(f"[debug] texto='{text}' cmd='{cmd}'")
-                pct = extraer_porcentaje(text)
-                if pct is not None:
-                    _aplicar_porcentaje_directo(cmd, pct)
-                else:
-                    _activar_continuo(cmd)
-                return None
-            if cmd in _COMANDOS_NAVEGAR:
-                _activar_navegar()
-                return None
-            if cmd in _COMANDOS_WIFI:
-                _cmd_wifi(cmd == "wifi_encender")
-                return None
-            if cmd in _COMANDOS_BLUETOOTH:
-                _cmd_bluetooth(cmd == "bluetooth_encender")
-                return None
-            if cmd in _COMANDOS_SISTEMA_AUDIO:
-                _cmd_mute()
-                return None
-            if cmd in _COMANDOS_APPS:
-                _diagnosticar_launch(cmd)
-            return cmd
+            return _despachar(cmd, text)
 
     # 1.5 Macros de medios (antes del fuzzy para no competir con él)
     from macros import ejecutar_macro_medios  # noqa: PLC0415
@@ -652,55 +657,11 @@ def texto_a_comando(text: str) -> str | None:
               else _UMBRAL_NORMAL)
 
     if similitud >= 80:
-        if cmd in _COMANDOS_CONTINUOS:
-            print(f"[debug] texto='{text}' cmd='{cmd}'")
-            pct = extraer_porcentaje(text)
-            if pct is not None:
-                _aplicar_porcentaje_directo(cmd, pct)
-            else:
-                _activar_continuo(cmd)
-            return None
-        if cmd in _COMANDOS_NAVEGAR:
-            _activar_navegar()
-            return None
-        if cmd in _COMANDOS_WIFI:
-            _cmd_wifi(cmd == "wifi_encender")
-            return None
-        if cmd in _COMANDOS_BLUETOOTH:
-            _cmd_bluetooth(cmd == "bluetooth_encender")
-            return None
-        if cmd in _COMANDOS_SISTEMA_AUDIO:
-            _cmd_mute()
-            return None
-        if cmd in _COMANDOS_APPS:
-            _diagnosticar_launch(cmd)
-        return cmd
+        return _despachar(cmd, text)
 
     if similitud >= umbral:
         print(f"[fuzzy] entendí: '{text}' → ejecutando: '{cmd}'")
-        if cmd in _COMANDOS_CONTINUOS:
-            print(f"[debug] texto='{text}' cmd='{cmd}'")
-            pct = extraer_porcentaje(text)
-            if pct is not None:
-                _aplicar_porcentaje_directo(cmd, pct)
-            else:
-                _activar_continuo(cmd)
-            return None
-        if cmd in _COMANDOS_NAVEGAR:
-            _activar_navegar()
-            return None
-        if cmd in _COMANDOS_WIFI:
-            _cmd_wifi(cmd == "wifi_encender")
-            return None
-        if cmd in _COMANDOS_BLUETOOTH:
-            _cmd_bluetooth(cmd == "bluetooth_encender")
-            return None
-        if cmd in _COMANDOS_SISTEMA_AUDIO:
-            _cmd_mute()
-            return None
-        if cmd in _COMANDOS_APPS:
-            _diagnosticar_launch(cmd)
-        return cmd
+        return _despachar(cmd, text)
 
     return None
 
