@@ -78,3 +78,37 @@ def ejecutar_macro_audio(texto: str) -> bool:
         print("[macro] mute")
         return True
     return False
+
+
+def ejecutar_macro_teclado(cmd: str, texto: str,
+                           activar_continuo_fn=None) -> bool:
+    """Macros de teclado: screenshots, clipboard, ventanas, zoom."""
+
+    acciones = {
+        "screenshot":         lambda: pyautogui.hotkey('win', 'prtsc'),
+        "screenshot_region":  lambda: pyautogui.hotkey('win', 'shift', 's'),
+        "screenshot_ventana": lambda: pyautogui.hotkey('alt', 'prtsc'),
+        "copiar":             lambda: pyautogui.hotkey('ctrl', 'c'),
+        "pegar":              lambda: pyautogui.hotkey('ctrl', 'v'),
+        "cortar":             lambda: pyautogui.hotkey('ctrl', 'x'),
+        "deshacer":           lambda: pyautogui.hotkey('ctrl', 'z'),
+        "seleccionar_todo":   lambda: pyautogui.hotkey('ctrl', 'a'),
+        "maximizar":          lambda: pyautogui.hotkey('win', 'up'),
+        "ventana_izquierda":  lambda: pyautogui.hotkey('win', 'left'),
+        "ventana_derecha":    lambda: pyautogui.hotkey('win', 'right'),
+        "cerrar_ventana":     lambda: pyautogui.hotkey('alt', 'f4'),
+    }
+
+    if cmd in acciones:
+        acciones[cmd]()
+        print(f"[macro] {cmd}")
+        return True
+
+    if cmd == "zoom":
+        pyautogui.hotkey('win', '+')
+        print("[macro] zoom — modo ajuste activo")
+        if activar_continuo_fn:
+            activar_continuo_fn("zoom")
+        return True
+
+    return False

@@ -50,6 +50,20 @@ VARIANTES: dict[str, set[str]] = {
     "microsoftstore":          {"tienda", "microsoft store", "store"},
     "piano 10":                {"piano"},
     "file explorer":           {"archivos", "file explorer", "explorador", "microsoft explorer"},
+    # ── Macros de teclado ────────────────────────────────────────────────────────
+    "screenshot":         {"captura", "screenshot", "capturar pantalla", "tomar captura"},
+    "screenshot_region":  {"captura region", "recortar", "captura area", "recorte"},
+    "screenshot_ventana": {"captura ventana", "capturar ventana"},
+    "copiar":             {"copiar", "copia"},
+    "pegar":              {"pegar", "pega"},
+    "cortar":             {"cortar", "corta"},
+    "deshacer":           {"deshacer", "deshaz"},
+    "seleccionar_todo":   {"seleccionar todo", "selecciona todo"},
+    "maximizar":          {"maximizar", "maximiza"},
+    "ventana_izquierda":  {"ventana izquierda", "mover izquierda"},
+    "ventana_derecha":    {"ventana derecha", "mover derecha"},
+    "cerrar_ventana":     {"cerrar ventana", "cierra ventana"},
+    "zoom":               {"zoom", "acerca", "acercar", "lupa"},
     # Sistema — orden importa: específico antes de genérico para evitar que
     # "apaga" (substring de apagar_pantalla) intercepte "apaga wifi" / "apaga bluetooth"
     "apagar_sistema":       {"apagar sistema", "apaga el sistema", "apagar equipo"},
@@ -111,7 +125,13 @@ _COMANDOS_CONTINUOS = {"brillo_subir", "brillo_bajar", "volumen_subir", "volumen
 _COMANDOS_NAVEGAR   = {"navegar"}
 _COMANDOS_WIFI      = {"wifi_apagar", "wifi_encender"}
 _COMANDOS_BLUETOOTH     = {"bluetooth_apagar", "bluetooth_encender"}
-_COMANDOS_MACROS        = {"minimizar", "cambiar_ventana", "bloquear", "volumen_mute"}
+_COMANDOS_MACROS        = {
+    "minimizar", "cambiar_ventana", "bloquear", "volumen_mute",
+    "screenshot", "screenshot_region", "screenshot_ventana",
+    "copiar", "pegar", "cortar", "deshacer", "seleccionar_todo",
+    "maximizar", "ventana_izquierda", "ventana_derecha",
+    "cerrar_ventana", "zoom",
+}
 _COMANDOS_APPS = (
     set(VARIANTES.keys())
     - _COMANDOS_SISTEMA
@@ -335,6 +355,12 @@ def _hilo_ajuste(tipo: str) -> None:
 
                 if tipo == "brillo":
                     ajustar_brillo(d * _PASO)
+                elif tipo == "zoom":
+                    import pyautogui as _pyautogui_zoom  # noqa: PLC0415
+                    if d > 0:
+                        _pyautogui_zoom.hotkey('win', '+')
+                    else:
+                        _pyautogui_zoom.hotkey('win', '-')
                 else:
                     ajustar_volumen(d * _PASO / 100)
                 _modo["t_fin"] = _time.time() + _TIMEOUT_AJUSTE  # reinicia temporizador
@@ -353,13 +379,13 @@ def _activar_continuo(cmd: str) -> None:
     """Ejecuta el primer ajuste y lanza el hilo de modo continuo."""
     global _ajuste_hilo
 
-    tipo      = "brillo" if "brillo" in cmd else "volumen"
-    direccion = +1 if cmd.endswith("subir") else -1   # +1 sube, -1 baja
-    print(f"[continuo] {tipo} — dirección={'⬆ subir' if direccion > 0 else '⬇ bajar'}")
+    tipo      = "brillo" if "brillo" in cmd else "volumen" if "volumen" in cmd else cmd
+    direccion = +1
+    print(f"[continuo] {tipo} — modo ajuste activo")
 
     if tipo == "brillo":
         ajustar_brillo(direccion * _PASO)
-    else:
+    elif tipo != "zoom":
         ajustar_volumen(direccion * _PASO / 100)
 
     # Señalizar al hilo anterior que termine y esperar (máx 1.5 s)
@@ -610,9 +636,11 @@ def _despachar(cmd: str, texto: str) -> str | None:
         _cmd_bluetooth(cmd == "bluetooth_encender")
         return None
     if cmd in _COMANDOS_MACROS:
-        from macros import ejecutar_macro_ventana, ejecutar_macro_audio  # noqa: PLC0415
+        from macros import (ejecutar_macro_ventana, ejecutar_macro_audio,  # noqa: PLC0415
+                            ejecutar_macro_teclado)
         ejecutar_macro_ventana(texto)
         ejecutar_macro_audio(texto)
+        ejecutar_macro_teclado(cmd, texto, activar_continuo_fn=_activar_continuo)
         return None
     if cmd in _COMANDOS_APPS:
         _diagnosticar_launch(cmd)
