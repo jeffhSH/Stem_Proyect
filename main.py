@@ -5,6 +5,7 @@ import time
 
 from apps import iniciar_watcher, launch
 from comandos import cargar_variantes_usuario
+from macros import cargar_variantes_usuario_macros
 from voz import MODEL_PATH, escuchar_wake_word, pausar, reanudar
 import training
 
@@ -28,6 +29,7 @@ def main() -> None:
     model_path = sys.argv[1] if len(sys.argv) > 1 else MODEL_PATH
 
     cargar_variantes_usuario()
+    cargar_variantes_usuario_macros()
     iniciar_watcher()
 
     threading.Thread(target=_listener_entrenamiento, daemon=True).start()

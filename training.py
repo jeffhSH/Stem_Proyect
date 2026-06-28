@@ -8,6 +8,7 @@ import vosk
 from pynput import keyboard as _kb
 
 from comandos import VARIANTES, _VARIANTES_PLANO
+from macros import VARIANTES_MEDIOS, USER_MACROS_PATH
 
 USER_VARIANTS_PATH = Path(__file__).parent / "user_variants.json"
 _CHUNK = 4000   # igual que voz.CHUNK
@@ -22,13 +23,22 @@ def iniciar() -> None:
         print("[entrenamiento] modelo Vosk no disponible todavía")
         return
 
-    cmds = list(VARIANTES.keys())
+    cmds        = list(VARIANTES.keys())
+    cmds_medios = list(VARIANTES_MEDIOS.keys())
+    n_cmd = len(cmds)
 
     print("\n" + "═" * 56)
     print("  MODO ENTRENAMIENTO — Stem")
     print("═" * 56)
     for i, cmd in enumerate(cmds, 1):
         variantes_str = ", ".join(sorted(VARIANTES[cmd]))
+        if len(variantes_str) > 42:
+            variantes_str = variantes_str[:39] + "..."
+        print(f"  {i:3}. {cmd:<26} {variantes_str}")
+    print()
+    print("  --- MEDIOS ---")
+    for i, cmd in enumerate(cmds_medios, n_cmd + 1):
+        variantes_str = ", ".join(sorted(VARIANTES_MEDIOS[cmd]))
         if len(variantes_str) > 42:
             variantes_str = variantes_str[:39] + "..."
         print(f"  {i:3}. {cmd:<26} {variantes_str}")
@@ -45,11 +55,17 @@ def iniciar() -> None:
         return
 
     idx = int(sel) - 1
-    if not (0 <= idx < len(cmds)):
+    if not (0 <= idx < n_cmd + len(cmds_medios)):
         print("Número fuera de rango.")
         return
 
-    cmd = cmds[idx]
+    es_macro = idx >= n_cmd
+    if es_macro:
+        cmd                = cmds_medios[idx - n_cmd]
+        variantes_actuales = VARIANTES_MEDIOS[cmd]
+    else:
+        cmd                = cmds[idx]
+        variantes_actuales = VARIANTES[cmd]
 
     while True:
         try:
@@ -62,7 +78,7 @@ def iniciar() -> None:
             break
         print("Ingresá un número entre 2 y 10.")
 
-    print(f"\n  Variantes actuales: {sorted(VARIANTES[cmd])}")
+    print(f"\n  Variantes actuales: {sorted(variantes_actuales)}")
     print(f"  Mantené Enter presionado mientras hablás, soltá para guardar")
     print(f"  ESC para salir del entrenamiento\n")
 
@@ -124,7 +140,7 @@ def iniciar() -> None:
 
                     if texto:
                         print(f"'{texto}'")
-                        if texto in VARIANTES[cmd]:
+                        if texto in variantes_actuales:
                             print("  (ya existe, se omite)")
                         else:
                             nuevas.add(texto)
@@ -136,15 +152,38 @@ def iniciar() -> None:
         print(f"[entrenamiento] error de audio: {e}")
 
     if nuevas:
-        _persistir(cmd, nuevas)
-        VARIANTES[cmd].update(nuevas)
-        for v in nuevas:
-            _VARIANTES_PLANO[v] = cmd
+        if es_macro:
+            _persistir_macro(cmd, nuevas)
+            VARIANTES_MEDIOS[cmd].update(nuevas)
+        else:
+            _persistir(cmd, nuevas)
+            VARIANTES[cmd].update(nuevas)
+            for v in nuevas:
+                _VARIANTES_PLANO[v] = cmd
         print(f"\n  Guardadas {len(nuevas)} variante(s): {sorted(nuevas)}")
     else:
         print("\n  Sin variantes nuevas.")
 
     print("═" * 56 + "\n")
+
+
+def _persistir_macro(cmd: str, variantes: set[str]) -> None:
+    """Añade `variantes` de `cmd` en user_macros.json."""
+    datos: dict[str, list[str]] = {}
+    if USER_MACROS_PATH.exists():
+        try:
+            datos = json.loads(USER_MACROS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    existentes = set(datos.get(cmd, []))
+    existentes.update(variantes)
+    datos[cmd] = sorted(existentes)
+
+    USER_MACROS_PATH.write_text(
+        json.dumps(datos, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def _persistir(cmd: str, variantes: set[str]) -> None:
