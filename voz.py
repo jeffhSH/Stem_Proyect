@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Callable
 
 import numpy as np
-import samplerate as _samplerate
 import sounddevice as sd
 import vosk
 
@@ -18,39 +17,6 @@ SAMPLE_RATE    = 16000
 CHUNK          = 4000
 WAKE_WORDS     = ["stem", "estén", "stein", "steam", "stand", "steve", "están", "sten", "esteam", "stern"]
 TIMEOUT_ACTIVO = 6.0
-
-
-def _get_native_rate(device=None) -> int:
-    """Detecta el sample rate nativo del dispositivo de entrada."""
-    try:
-        info = sd.query_devices(device=device, kind="input")
-        return int(info["default_sample_rate"])
-    except Exception:
-        return 48000
-
-_NATIVE_RATE    = _get_native_rate()
-_RESAMPLER      = _samplerate.Resampler("sinc_fastest", channels=1)
-_RESAMPLE_RATIO = SAMPLE_RATE / _NATIVE_RATE
-print(f"[audio] dispositivo predeterminado: {sd.query_devices(kind='input')['name']}")
-print(f"[audio] sample rate nativo: {_NATIVE_RATE} Hz")
-print(f"[audio] resample ratio: {_RESAMPLE_RATIO:.4f}")
-print(f"[audio] target rate Vosk: {SAMPLE_RATE} Hz")
-_INPUT_STREAM_KWARGS = {
-    "samplerate": _NATIVE_RATE,
-    "blocksize":  8000,
-    "latency":    "high",
-    "dtype":      "int16",
-    "channels":   1,
-}
-
-
-def _resample_to_vosk(indata: bytes) -> bytes:
-    """Convierte audio de _NATIVE_RATE a SAMPLE_RATE (16000 Hz) para Vosk."""
-    if _NATIVE_RATE == SAMPLE_RATE:
-        return indata
-    pcm       = np.frombuffer(indata, dtype="int16").astype("float32") / 32767.0
-    resampled = _RESAMPLER.process(pcm, _RESAMPLE_RATIO)
-    return (resampled * 32767).astype("int16").tobytes()
 
 # Modelo cargado (accesible por training.py sin recarga)
 _modelo_activo: vosk.Model | None = None
@@ -122,11 +88,16 @@ def escuchar(
     print("Escuchando... Ctrl+C para salir.\n")
 
     try:
-        with sd.RawInputStream(**_INPUT_STREAM_KWARGS) as stream:
+        with sd.RawInputStream(
+            samplerate=SAMPLE_RATE,
+            blocksize=CHUNK,
+            dtype="int16",
+            channels=1,
+        ) as stream:
             while True:
                 data, _overflow = stream.read(CHUNK)
 
-                if rec.AcceptWaveform(_resample_to_vosk(bytes(data))):
+                if rec.AcceptWaveform(bytes(data)):
                     texto = json.loads(rec.Result()).get("text", "").strip()
                     if texto:
                         print(f"[oído]: {texto}")
@@ -201,7 +172,7 @@ def escuchar_wake_word(
     audio_q: queue.Queue = queue.Queue()
 
     def _callback(indata, frames, time_info, status):
-        audio_q.put(_resample_to_vosk(bytes(indata)))
+        audio_q.put(bytes(indata))
 
     dormido         = True
     t_activo        = 0.0
@@ -234,7 +205,13 @@ def escuchar_wake_word(
     print("Presioná T para entrar al modo entrenamiento.\n")
 
     try:
-        with sd.RawInputStream(**_INPUT_STREAM_KWARGS, callback=_callback):
+        with sd.RawInputStream(
+            samplerate=SAMPLE_RATE,
+            blocksize=CHUNK,
+            dtype="int16",
+            channels=1,
+            callback=_callback,
+        ):
             while True:
                 # Activación/extensión de ventana por tecla |
                 if _tecla_activa.is_set():

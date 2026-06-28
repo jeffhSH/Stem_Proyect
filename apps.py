@@ -148,7 +148,6 @@ def _esperar_confirmacion_voz() -> bool:
     import json as _json
     import vosk
     import sounddevice as sd
-    import voz as _voz
 
     try:
         vosk.SetLogLevel(-1)
@@ -163,9 +162,10 @@ def _esperar_confirmacion_voz() -> bool:
     q: _queue.Queue = _queue.Queue()
 
     def _cb(indata, frames, time_info, status):
-        q.put(_voz._resample_to_vosk(bytes(indata)))
+        q.put(bytes(indata))
 
-    with sd.RawInputStream(**_voz._INPUT_STREAM_KWARGS, callback=_cb):
+    with sd.RawInputStream(samplerate=16000, blocksize=4000, dtype="int16",
+                           channels=1, callback=_cb):
         while time.time() < t_fin:
             try:
                 data = q.get(timeout=max(0.1, t_fin - time.time()))

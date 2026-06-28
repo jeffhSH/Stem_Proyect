@@ -285,7 +285,6 @@ def _hilo_ajuste(tipo: str) -> None:
     import queue as _queue
     import sounddevice as _sd
     import vosk as _vosk
-    from voz import _INPUT_STREAM_KWARGS as _stream_kw, _resample_to_vosk  # noqa: PLC0415
 
     try:
         model = _get_vosk_model()
@@ -299,12 +298,13 @@ def _hilo_ajuste(tipo: str) -> None:
     q: _queue.Queue = _queue.Queue()
 
     def _cb(indata, frames, time_info, status):
-        q.put(_resample_to_vosk(bytes(indata)))
+        q.put(bytes(indata))
 
     print(f"[{tipo}] modo ajuste — di 'más'/'menos' o 'listo' ({int(_TIMEOUT_AJUSTE)} s)")
 
     try:
-        with _sd.RawInputStream(**_stream_kw, callback=_cb):
+        with _sd.RawInputStream(samplerate=_SAMPLE_RATE, blocksize=_CHUNK,
+                                dtype="int16", channels=1, callback=_cb):
             while _time.time() < _modo["t_fin"]:
                 try:
                     data = q.get(timeout=0.5)
@@ -402,7 +402,6 @@ def _hilo_navegar() -> None:
     import sounddevice as _sd
     import vosk as _vosk
     import pyautogui as _pyautogui
-    from voz import _INPUT_STREAM_KWARGS as _stream_kw, _resample_to_vosk  # noqa: PLC0415
 
     try:
         model = _get_vosk_model()
@@ -416,7 +415,7 @@ def _hilo_navegar() -> None:
     q: _queue.Queue = _queue.Queue()
 
     def _cb(indata, frames, time_info, status):
-        q.put(_resample_to_vosk(bytes(indata)))
+        q.put(bytes(indata))
 
     _saltos = 0  # contador de teclas Tab enviadas
 
@@ -445,7 +444,8 @@ def _hilo_navegar() -> None:
     print(f"[navegar] Alt sostenido — di 'siguiente', 'anterior' o 'abrir' ({int(_TIMEOUT_NAVEGAR)} s)")
 
     try:
-        with _sd.RawInputStream(**_stream_kw, callback=_cb):
+        with _sd.RawInputStream(samplerate=_SAMPLE_RATE, blocksize=_CHUNK,
+                                dtype="int16", channels=1, callback=_cb):
             _parcial_actuado = ""
             while _time.time() < _modo["t_fin"]:
                 try:
