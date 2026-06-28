@@ -151,11 +151,15 @@ def escuchar_wake_word(
     Activo:  rec_activo con gramática restringida a VARIANTES reduce falsos positivos (Fix 1).
     """
     from comandos import texto_a_comando, VARIANTES, NUMEROS_ES  # noqa: PLC0415
+    from macros import VARIANTES_MEDIOS                          # noqa: PLC0415
 
     model = _cargar_modelo(model_path or MODEL_PATH)
 
-    # Fix 1: gramática restringida — variantes + números para porcentajes + confirmación
-    _gram_frases  = sorted({v for vset in VARIANTES.values() for v in vset})
+    # Fix 1: gramática restringida — variantes de comandos + macros de medios + números + confirmación
+    _gram_frases  = sorted(
+        {v for vset in VARIANTES.values()       for v in vset} |
+        {v for vset in VARIANTES_MEDIOS.values() for v in vset}
+    )
     _gram_numeros = list(NUMEROS_ES.keys())
     _gram_json    = json.dumps(_gram_frases + _gram_numeros + ["confirmar", "[unk]"])
 
