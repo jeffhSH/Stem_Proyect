@@ -373,31 +373,19 @@ def _activar_continuo(cmd: str) -> None:
 
 # ── Navegación de ventanas ────────────────────────────────────────────────────
 
-GRAMMAR_NAVEGAR = (
-    '["siguiente", "anterior", "abrir", "vuelve", "atrás", "atras", '
-    '"uno", "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve", "diez", "[unk]"]'
-)
-
-NUMEROS_NAVEGAR: dict[str, int] = {
-    "uno": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5,
-    "seis": 6, "siete": 7, "ocho": 8, "nueve": 9, "diez": 10,
-}
+GRAMMAR_NAVEGAR = '["siguiente", "anterior", "abrir", "vuelve", "atrás", "atras", "[unk]"]'
 
 # Conjunto de palabras válidas del grammar (para filtrar parciales)
-_GRAMMAR_NAVEGAR_PALABRAS: frozenset[str] = frozenset(NUMEROS_NAVEGAR) | {
+_GRAMMAR_NAVEGAR_PALABRAS: frozenset[str] = frozenset({
     "siguiente", "anterior", "abrir", "vuelve", "atrás", "atras",
-}
+})
 
 
 def _subcmd_navegar(text: str) -> str | None:
     """
     Detecta sub-comando de navegación por substring directo contra el grammar.
     Sin fuzzy — Vosk ya filtra por gramática restringida.
-    Devuelve la palabra del número (ej. 'cuatro') para que el llamador la mapee.
     """
-    for num in NUMEROS_NAVEGAR:
-        if num in text:
-            return num
     if "siguiente" in text:
         return "siguiente"
     if any(p in text for p in ("anterior", "vuelve", "atrás", "atras")):
@@ -429,37 +417,31 @@ def _hilo_navegar() -> None:
     def _cb(indata, frames, time_info, status):
         q.put(bytes(indata))
 
-    def _ejecutar(cmd: str) -> bool:
+    _saltos = 0  # contador de teclas Tab enviadas
+
+    def _ejecutar(cmd: str, fuente: str) -> bool:
         """Ejecuta el sub-comando. Retorna True si el hilo debe terminar."""
+        nonlocal _saltos
         if cmd == "siguiente":
+            _saltos += 1
+            print(f"[navegar] {fuente} → SIGUIENTE (Tab #{_saltos})")
             _pyautogui.press('tab')
             _modo["t_fin"] = _time.time() + _TIMEOUT_NAVEGAR
         elif cmd == "anterior":
+            _saltos += 1
+            print(f"[navegar] {fuente} → ANTERIOR (Shift+Tab #{_saltos})")
             _pyautogui.keyDown('shift')
             _pyautogui.press('tab')
             _pyautogui.keyUp('shift')
             _modo["t_fin"] = _time.time() + _TIMEOUT_NAVEGAR
-        elif cmd in NUMEROS_NAVEGAR:
-            n = NUMEROS_NAVEGAR[cmd]
-            # Suelta Alt → Alt+Tab (pos 1) → Tab × (n-1) → suelta Alt
-            _pyautogui.keyUp('alt')
-            _time.sleep(0.05)
-            _pyautogui.keyDown('alt')
-            _pyautogui.press('tab')
-            for _ in range(n - 1):
-                _pyautogui.press('tab')
-            _pyautogui.keyUp('alt')
-            return True
         elif cmd == "abrir":
+            print(f"[navegar] {fuente} → ABRIR (suelta Alt)")
             return True
         return False
 
     _pyautogui.keyDown('alt')
     _pyautogui.press('tab')
-    print(
-        f"[navegar] Alt sostenido — di 'siguiente', 'anterior', número o 'abrir' "
-        f"({int(_TIMEOUT_NAVEGAR)} s)"
-    )
+    print(f"[navegar] Alt sostenido — di 'siguiente', 'anterior' o 'abrir' ({int(_TIMEOUT_NAVEGAR)} s)")
 
     try:
         with _sd.RawInputStream(samplerate=_SAMPLE_RATE, blocksize=_CHUNK,
@@ -473,20 +455,26 @@ def _hilo_navegar() -> None:
 
                 if rec.AcceptWaveform(data):
                     texto = _json.loads(rec.Result()).get("text", "").strip()
+                    print(f"[navegar] FINAL raw='{texto}' parcial_actuado='{_parcial_actuado}'")
                     if texto and not _parcial_actuado:
                         subcmd = _subcmd_navegar(texto)
-                        if subcmd and _ejecutar(subcmd):
+                        if subcmd and _ejecutar(subcmd, f"final('{texto}')"):
                             break
-                    _parcial_actuado = ""  # siempre resetear al cerrar utterance
+                    elif texto and _parcial_actuado:
+                        print(f"[navegar] final IGNORADO (parcial '{_parcial_actuado}' ya actuó)")
+                    _parcial_actuado = ""
                 else:
                     parcial = _json.loads(rec.PartialResult()).get("partial", "").strip()
-                    if (parcial
-                            and parcial in _GRAMMAR_NAVEGAR_PALABRAS
-                            and parcial != _parcial_actuado):
+                    if not parcial:
+                        continue
+                    en_grammar = parcial in _GRAMMAR_NAVEGAR_PALABRAS
+                    ya_actuado = parcial == _parcial_actuado
+                    print(f"[navegar] PARCIAL raw='{parcial}' en_grammar={en_grammar} ya_actuado={ya_actuado}")
+                    if en_grammar and not ya_actuado:
                         subcmd = _subcmd_navegar(parcial)
                         if subcmd:
                             _parcial_actuado = parcial
-                            if _ejecutar(subcmd):
+                            if _ejecutar(subcmd, f"parcial('{parcial}')"):
                                 break
 
     except Exception as e:
@@ -495,7 +483,7 @@ def _hilo_navegar() -> None:
         _pyautogui.keyUp('alt')
         if _modo["tipo"] == "navegar":
             _modo["tipo"] = None
-        print("[navegar] modo navegación finalizado")
+        print(f"[navegar] modo navegación finalizado — {_saltos} salto(s) enviado(s)")
 
 
 def _activar_navegar() -> None:
