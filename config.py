@@ -17,6 +17,7 @@ WIFI_ADAPTER:      str | None = None
 BT_ADAPTER:        str | None = None
 TECLA_ACTIVACION:  str       = "|"
 STEM_MEDIOS_ACTIVO: bool     = True
+MIC_NOMBRE:        str | None = "WH-CH520"
 
 
 # ── Detección ──────────────────────────────────────────────────────────────────

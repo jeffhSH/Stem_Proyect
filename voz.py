@@ -58,8 +58,34 @@ def reanudar() -> None:
     _entrenando.clear()
 
 
+def _seleccionar_mic() -> None:
+    """Busca MIC_NOMBRE en los dispositivos de entrada y lo establece como default.
+    Si hay varios matches, prefiere el perfil Hands-Free (HFP) de Bluetooth."""
+    from config import MIC_NOMBRE  # noqa: PLC0415
+    if not MIC_NOMBRE:
+        return
+    try:
+        devices    = sd.query_devices()
+        nombre_lower = MIC_NOMBRE.lower()
+        candidatos = [
+            (i, d) for i, d in enumerate(devices)
+            if nombre_lower in d["name"].lower() and d["max_input_channels"] > 0
+        ]
+        if not candidatos:
+            print(f"[voz] '{MIC_NOMBRE}' no encontrado — usando dispositivo por defecto")
+            return
+        hfp = [(i, d) for i, d in candidatos if "hands-free" in d["name"].lower()]
+        idx, dev = (hfp or candidatos)[0]
+        cur_out = sd.default.device[1] if isinstance(sd.default.device, tuple) else None
+        sd.default.device = (idx, cur_out)
+        print(f"[voz] micrófono [{idx}]: {dev['name'].strip()}")
+    except Exception as e:
+        print(f"[voz] error buscando micrófono: {e}")
+
+
 def _cargar_modelo(model_path: str) -> vosk.Model:
     global _modelo_activo
+    _seleccionar_mic()
     path = Path(model_path)
     if not path.exists():
         print(f"Error: modelo no encontrado en '{model_path}'")
