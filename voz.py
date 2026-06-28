@@ -31,6 +31,10 @@ def _get_native_rate(device=None) -> int:
 _NATIVE_RATE    = _get_native_rate()
 _RESAMPLER      = _samplerate.Resampler("sinc_fastest", channels=1)
 _RESAMPLE_RATIO = SAMPLE_RATE / _NATIVE_RATE
+print(f"[audio] dispositivo predeterminado: {sd.query_devices(kind='input')['name']}")
+print(f"[audio] sample rate nativo: {_NATIVE_RATE} Hz")
+print(f"[audio] resample ratio: {_RESAMPLE_RATIO:.4f}")
+print(f"[audio] target rate Vosk: {SAMPLE_RATE} Hz")
 _INPUT_STREAM_KWARGS = {
     "samplerate": _NATIVE_RATE,
     "blocksize":  8000,
