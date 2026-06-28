@@ -117,7 +117,7 @@ def iniciar() -> None:
 
     def _audio_cb(indata, frame_count, time_info, status):
         if _grabando.is_set():
-            frames.append(bytes(indata))
+            frames.append(voz._resample_to_vosk(bytes(indata)))
 
     # ── Bucle de repeticiones ────────────────────────────────────────────────
     nuevas: set[str] = set()

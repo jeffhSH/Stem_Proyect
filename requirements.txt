@@ -1,3 +1,4 @@
 vosk
 sounddevice
+samplerate
 watchdog

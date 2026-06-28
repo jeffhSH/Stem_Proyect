@@ -285,7 +285,7 @@ def _hilo_ajuste(tipo: str) -> None:
     import queue as _queue
     import sounddevice as _sd
     import vosk as _vosk
-    from voz import _INPUT_STREAM_KWARGS as _stream_kw  # noqa: PLC0415
+    from voz import _INPUT_STREAM_KWARGS as _stream_kw, _resample_to_vosk  # noqa: PLC0415
 
     try:
         model = _get_vosk_model()
@@ -299,7 +299,7 @@ def _hilo_ajuste(tipo: str) -> None:
     q: _queue.Queue = _queue.Queue()
 
     def _cb(indata, frames, time_info, status):
-        q.put(bytes(indata))
+        q.put(_resample_to_vosk(bytes(indata)))
 
     print(f"[{tipo}] modo ajuste — di 'más'/'menos' o 'listo' ({int(_TIMEOUT_AJUSTE)} s)")
 
@@ -402,7 +402,7 @@ def _hilo_navegar() -> None:
     import sounddevice as _sd
     import vosk as _vosk
     import pyautogui as _pyautogui
-    from voz import _INPUT_STREAM_KWARGS as _stream_kw  # noqa: PLC0415
+    from voz import _INPUT_STREAM_KWARGS as _stream_kw, _resample_to_vosk  # noqa: PLC0415
 
     try:
         model = _get_vosk_model()
@@ -416,7 +416,7 @@ def _hilo_navegar() -> None:
     q: _queue.Queue = _queue.Queue()
 
     def _cb(indata, frames, time_info, status):
-        q.put(bytes(indata))
+        q.put(_resample_to_vosk(bytes(indata)))
 
     _saltos = 0  # contador de teclas Tab enviadas
 

@@ -163,7 +163,7 @@ def _esperar_confirmacion_voz() -> bool:
     q: _queue.Queue = _queue.Queue()
 
     def _cb(indata, frames, time_info, status):
-        q.put(bytes(indata))
+        q.put(_voz._resample_to_vosk(bytes(indata)))
 
     with sd.RawInputStream(**_voz._INPUT_STREAM_KWARGS, callback=_cb):
         while time.time() < t_fin:
