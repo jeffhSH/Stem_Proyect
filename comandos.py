@@ -106,13 +106,11 @@ _VARIANTES_PLANO: dict[str, str] = {
     for v in variantes
 }
 
-_COMANDOS_SISTEMA   = {"apagar_pantalla", "apagar_sistema", "bloquear", "reiniciar"}
+_COMANDOS_SISTEMA   = {"apagar_pantalla", "apagar_sistema", "reiniciar"}
 _COMANDOS_CONTINUOS = {"brillo_subir", "brillo_bajar", "volumen_subir", "volumen_bajar"}
 _COMANDOS_NAVEGAR   = {"navegar"}
 _COMANDOS_WIFI      = {"wifi_apagar", "wifi_encender"}
 _COMANDOS_BLUETOOTH     = {"bluetooth_apagar", "bluetooth_encender"}
-_COMANDOS_VENTANA       = {"cambiar_ventana", "minimizar"}
-_COMANDOS_SISTEMA_AUDIO = {"volumen_mute"}
 _COMANDOS_APPS = (
     set(VARIANTES.keys())
     - _COMANDOS_SISTEMA
@@ -120,8 +118,6 @@ _COMANDOS_APPS = (
     - _COMANDOS_NAVEGAR
     - _COMANDOS_WIFI
     - _COMANDOS_BLUETOOTH
-    - _COMANDOS_VENTANA
-    - _COMANDOS_SISTEMA_AUDIO
     - {"salir"}
 )
 
@@ -611,9 +607,6 @@ def _despachar(cmd: str, texto: str) -> str | None:
     if cmd in _COMANDOS_BLUETOOTH:
         _cmd_bluetooth(cmd == "bluetooth_encender")
         return None
-    if cmd in _COMANDOS_SISTEMA_AUDIO:
-        _cmd_mute()
-        return None
     if cmd in _COMANDOS_APPS:
         _diagnosticar_launch(cmd)
     return cmd
@@ -641,7 +634,11 @@ def texto_a_comando(text: str) -> str | None:
             return _despachar(cmd, text)
 
     # 1.5 Macros de medios (antes del fuzzy para no competir con él)
-    from macros import ejecutar_macro_medios  # noqa: PLC0415
+    from macros import ejecutar_macro_medios, ejecutar_macro_ventana, ejecutar_macro_audio  # noqa: PLC0415
+    if ejecutar_macro_ventana(text):
+        return None
+    if ejecutar_macro_audio(text):
+        return None
     if ejecutar_macro_medios(text):
         return None
 

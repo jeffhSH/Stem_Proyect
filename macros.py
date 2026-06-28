@@ -52,3 +52,29 @@ def cargar_variantes_usuario_macros() -> None:
 
     if añadidas:
         print(f"[macros] {añadidas} variante(s) de usuario cargadas")
+
+
+def ejecutar_macro_ventana(texto: str) -> bool:
+    """Macros de ventanas: minimizar, cambiar, bloquear."""
+    if any(v in texto for v in {"minimizar"}):
+        pyautogui.hotkey('win', 'd')
+        print("[macro] minimizar")
+        return True
+    if any(v in texto for v in {"cambiar", "cambiar ventana"}):
+        pyautogui.hotkey('alt', 'tab')
+        print("[macro] cambiar_ventana")
+        return True
+    if any(v in texto for v in {"bloquear", "bloquea", "bloqueo"}):
+        pyautogui.hotkey('win', 'l')
+        print("[macro] bloquear")
+        return True
+    return False
+
+
+def ejecutar_macro_audio(texto: str) -> bool:
+    """Macros de audio: mute."""
+    if any(v in texto for v in {"mutear", "mute", "silencio", "muy tea", "sin sonido", "quitar sonido"}):
+        pyautogui.press('volumemute')
+        print("[macro] mute")
+        return True
+    return False
