@@ -12,9 +12,9 @@ VARIANTES_MEDIOS = {
 }
 
 _ACCIONES = {
-    "media_anterior":   lambda: pyautogui.press('f9'),
-    "media_pausa":      lambda: pyautogui.press('f10'),
-    "media_siguiente":  lambda: pyautogui.press('f11'),
+    "media_anterior":   lambda: pyautogui.press('prevtrack'),
+    "media_pausa":      lambda: pyautogui.press('playpause'),
+    "media_siguiente":  lambda: pyautogui.press('nexttrack'),
 }
 
 
