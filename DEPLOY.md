@@ -18,6 +18,17 @@ Configuración manual requerida una vez por máquina antes de usar Stem.
 - [ ] `mmsys.cpl` → Comunicaciones → seleccionar **"No hacer nada"**
       (evita que Windows baje el volumen de reproducción al detectar voz)
 
+## Limitaciones conocidas
+
+### Audio Bluetooth (HFP vs A2DP)
+- Auriculares Bluetooth activan perfil HFP al usar micrófono,
+  degradando el audio de reproducción. No tiene solución desde software.
+- Solución actual: usar micrófono integrado de laptop como predeterminado.
+- Solución futura (Fase 3): micrófono USB externo o auriculares con
+  dongle USB 2.4GHz.
+- El resampleo 48kHz→16kHz está implementado y funciona correctamente
+  para cualquier dispositivo no-Bluetooth.
+
 ## Pendientes antes del release
 
 - [ ] Verificar que auriculares/dispositivo de audio estén configurados

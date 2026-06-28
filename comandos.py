@@ -84,10 +84,17 @@ VARIANTES: dict[str, set[str]] = {
     "brillo_bajar":    {"bajar brillo", "baja brillo", "menos brillo",
                         "baja el brillo", "reduce brillo"},
     # ── Continuos — volumen ───────────────────────────────────────────────────
+    # "sonido" es sinónimo coloquial de "volumen"; se añade para evitar que fuzzy
+    # prefiera brillo_bajar sobre volumen_bajar cuando el usuario dice "bajar sonido"
+    # (brillo/sonido comparten más chars que volumen/sonido → falso positivo sin esto)
     "volumen_subir":   {"subir volumen", "sube volumen", "más volumen", "mas volumen",
-                        "sube el volumen", "aumenta volumen"},
+                        "sube el volumen", "aumenta volumen",
+                        "subir sonido", "sube sonido", "más sonido", "mas sonido",
+                        "sube el sonido", "aumenta sonido"},
     "volumen_bajar":   {"bajar volumen", "baja volumen", "menos volumen",
-                        "baja el volumen", "reduce volumen"},
+                        "baja el volumen", "reduce volumen",
+                        "bajar sonido", "baja sonido", "menos sonido",
+                        "baja el sonido", "reduce sonido"},
     "volumen_mute":    {"mutear", "mute", "silencio", "muy tea", "sin sonido", "quitar sonido"},
     # ── Apps con fallback directo ─────────────────────────────────────────────────
     "brave":           {"brave", "bravo", "brave browser"},
