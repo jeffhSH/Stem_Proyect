@@ -610,7 +610,10 @@ def _despachar(cmd: str, texto: str) -> str | None:
         _cmd_bluetooth(cmd == "bluetooth_encender")
         return None
     if cmd in _COMANDOS_MACROS:
-        return cmd
+        from macros import ejecutar_macro_ventana, ejecutar_macro_audio  # noqa: PLC0415
+        ejecutar_macro_ventana(texto)
+        ejecutar_macro_audio(texto)
+        return None
     if cmd in _COMANDOS_APPS:
         _diagnosticar_launch(cmd)
     return cmd
@@ -635,14 +638,19 @@ def texto_a_comando(text: str) -> str | None:
     # 1. Coincidencia exacta por substring (orden del dict importa)
     for cmd, variantes in VARIANTES.items():
         if any(v in text for v in variantes):
+            print(f"[debug] substring match: cmd={cmd}")
             return _despachar(cmd, text)
 
     # 1.5 Macros de medios (antes del fuzzy para no competir con él)
     from macros import ejecutar_macro_medios, ejecutar_macro_ventana, ejecutar_macro_audio  # noqa: PLC0415
     if ejecutar_macro_ventana(text):
+        print("[debug] ejecutar_macro_ventana → True")
         return None
+    print("[debug] ejecutar_macro_ventana → False")
     if ejecutar_macro_audio(text):
+        print("[debug] ejecutar_macro_audio → True")
         return None
+    print("[debug] ejecutar_macro_audio → False")
     if ejecutar_macro_medios(text):
         return None
 
@@ -658,9 +666,11 @@ def texto_a_comando(text: str) -> str | None:
               else _UMBRAL_NORMAL)
 
     if similitud >= 80:
+        print(f"[debug] fuzzy match: cmd={cmd}")
         return _despachar(cmd, text)
 
     if similitud >= umbral:
+        print(f"[debug] fuzzy match: cmd={cmd}")
         print(f"[fuzzy] entendí: '{text}' → ejecutando: '{cmd}'")
         return _despachar(cmd, text)
 
