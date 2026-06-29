@@ -6,6 +6,7 @@ import time
 from apps import iniciar_watcher, launch
 from comandos import cargar_variantes_usuario
 from macros import cargar_variantes_usuario_macros
+from ia import precargar_whisper
 from voz import MODEL_PATH, escuchar_wake_word, pausar, reanudar, activar_ia
 import training
 
@@ -34,6 +35,7 @@ def main() -> None:
     cargar_variantes_usuario()
     cargar_variantes_usuario_macros()
     iniciar_watcher()
+    precargar_whisper()
 
     threading.Thread(target=_listener_entrenamiento, daemon=True).start()
 
