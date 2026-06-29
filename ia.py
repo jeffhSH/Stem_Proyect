@@ -2,6 +2,7 @@ import asyncio
 import os
 import tempfile
 import threading
+from datetime import datetime
 from pathlib import Path
 
 import edge_tts
@@ -15,6 +16,11 @@ from openai import OpenAI
 load_dotenv(Path(__file__).parent / ".env")
 
 _client          = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+def _ts() -> str:
+    now = datetime.now()
+    return f"[{now.strftime('%H:%M:%S')}.{now.microsecond // 1000:03d}]"
 _modelo_whisper: WhisperModel | None = None
 _whisper_lock    = threading.Lock()
 
@@ -71,6 +77,7 @@ def hablar_edge(texto: str) -> None:
         tmp_path = f.name
 
     try:
+        print(f"{_ts()}[ia] inicio TTS (sintetizando...)")
         asyncio.run(_guardar(tmp_path))
         decoded = miniaudio.decode_file(
             tmp_path,
@@ -79,7 +86,9 @@ def hablar_edge(texto: str) -> None:
             sample_rate=24000,
         )
         samples = np.frombuffer(bytes(decoded.samples), dtype=np.int16)
+        print(f"{_ts()}[ia] TTS reproduciendo...")
         sd.play(samples, decoded.sample_rate)
         sd.wait()
+        print(f"{_ts()}[ia] fin TTS")
     finally:
         os.unlink(tmp_path)

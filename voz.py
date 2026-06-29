@@ -5,6 +5,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
@@ -41,6 +42,11 @@ def _apagar_pantalla() -> None:
         target=lambda: ctypes.windll.user32.SendMessageW(0xFFFF, 0x0112, 0xF170, 2),
         daemon=True,
     ).start()
+
+
+def _ts() -> str:
+    now = datetime.now()
+    return f"[{now.strftime('%H:%M:%S')}.{now.microsecond // 1000:03d}]"
 
 
 def _drenar_audio(q: queue.Queue) -> None:
@@ -87,7 +93,7 @@ def _capturar_audio_ia(audio_q: queue.Queue, rec: vosk.KaldiRecognizer, timeout:
 
 def _esperar_followup_ia(audio_q: queue.Queue, rec: vosk.KaldiRecognizer) -> bool:
     """Escucha 6 s con Vosk tras la respuesta IA. True = continuar, False = cerrar/timeout."""
-    print("[ia] ¿otra pregunta? ('no' para continuar, silencio o 'sí'/'eso es todo' para cerrar)...")
+    print(f"{_ts()}[ia] inicio espera post-respuesta (6 s) — 'no' continúa, silencio/'sí' cierra...")
     _drenar_audio(audio_q)
     rec.Reset()
     t_fin = time.time() + 6.0
@@ -99,7 +105,7 @@ def _esperar_followup_ia(audio_q: queue.Queue, rec: vosk.KaldiRecognizer) -> boo
         if rec.AcceptWaveform(data):
             texto = json.loads(rec.Result()).get("text", "").lower().strip()
             if texto:
-                print(f"[ia] followup: '{texto}'")
+                print(f"{_ts()}[ia] followup oído: '{texto}'")
                 if "no" in texto:
                     rec.Reset()
                     return True
@@ -107,9 +113,10 @@ def _esperar_followup_ia(audio_q: queue.Queue, rec: vosk.KaldiRecognizer) -> boo
         else:
             texto = json.loads(rec.PartialResult()).get("partial", "").lower().strip()
             if texto and "no" in texto:
+                print(f"{_ts()}[ia] followup oído (parcial): '{texto}'")
                 rec.Reset()
                 return True
-    print("[ia] cerrando modo inteligente.")
+    print(f"{_ts()}[ia] cerrando modo inteligente.")
     rec.Reset()
     return False
 
@@ -120,20 +127,20 @@ def _activar_modo_ia_interno(audio_q: queue.Queue, rec: vosk.KaldiRecognizer) ->
     from ia import transcribir_whisper, consultar_gpt, hablar_edge  # noqa: PLC0415
 
     while True:
-        print("[ia] di tu pregunta...")
+        print(f"{_ts()}[ia] di tu pregunta...")
         audio_bytes = _capturar_audio_ia(audio_q, rec)
         if not audio_bytes:
-            print("[ia] no se capturó audio")
+            print(f"{_ts()}[ia] no se capturó audio")
             return
-        print("[ia] transcribiendo con Faster-Whisper...")
+        print(f"{_ts()}[ia] inicio transcripción Faster-Whisper...")
         texto = transcribir_whisper(audio_bytes)
         if not texto:
-            print("[ia] no se detectó texto")
+            print(f"{_ts()}[ia] no se detectó texto")
             return
-        print(f"[ia] oído: '{texto}'")
-        print("[ia] consultando GPT-4o-mini...")
+        print(f"{_ts()}[ia] fin transcripción — oído: '{texto}'")
+        print(f"{_ts()}[ia] inicio GPT-4o-mini...")
         respuesta = consultar_gpt(texto)
-        print(f"[ia] respuesta: '{respuesta}'")
+        print(f"{_ts()}[ia] fin GPT — respuesta: '{respuesta}'")
         hablar_edge(respuesta)
 
         if not _esperar_followup_ia(audio_q, rec):
