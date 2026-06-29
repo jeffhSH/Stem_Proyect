@@ -36,8 +36,14 @@ def _get_modelo() -> WhisperModel:
     if _modelo_whisper is None:
         with _whisper_lock:
             if _modelo_whisper is None:
-                print(f"{_ts()}[ia] cargando Faster-Whisper small (int8)...")
-                _modelo_whisper = WhisperModel("small", device="cpu", compute_type="int8")
+                print(f"{_ts()}[ia] cargando Faster-Whisper base (int8)...")
+                _modelo_whisper = WhisperModel(
+                    "base",
+                    device="cpu",
+                    compute_type="int8",
+                    cpu_threads=6,
+                    num_workers=1,
+                )
                 print(f"{_ts()}[ia] modelo listo")
     return _modelo_whisper
 
@@ -45,12 +51,16 @@ def _get_modelo() -> WhisperModel:
 def transcribir_whisper(audio_bytes: bytes) -> str:
     """Transcribe audio raw int16 bytes con Faster-Whisper. Retorna el texto."""
     arr = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+    arr = np.ascontiguousarray(arr)
     segments, _ = _get_modelo().transcribe(
         arr,
         language="es",
-        beam_size=5,
-        vad_filter=False,
+        beam_size=1,
+        best_of=1,
+        vad_filter=True,
+        vad_parameters=dict(min_silence_duration_ms=300, threshold=0.5),
         condition_on_previous_text=False,
+        word_timestamps=False,
     )
     return " ".join(seg.text for seg in segments).strip()
 
