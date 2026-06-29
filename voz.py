@@ -15,7 +15,9 @@ import vosk
 MODEL_PATH     = "vosk-model-small-es-0.42"
 SAMPLE_RATE    = 16000
 CHUNK          = 4000
-WAKE_WORDS     = ["stem", "estén", "stein", "steam", "stand", "steve", "están", "sten", "esteam", "stern", "inteligente", "ia"]
+WAKE_WORDS          = ["stem", "estén", "stein", "steam", "stand", "steve", "están", "sten", "esteam", "stern", "inteligente", "ia"]
+WAKE_WORDS_COMANDOS = ["comando", "comand", "komando"]
+WAKE_WORD_IA        = ["stem", "estén", "stein", "steam", "stand", "steve", "están", "sten", "esteam", "stern"]
 TIMEOUT_ACTIVO = 6.0
 
 # Modelo cargado (accesible por training.py sin recarga)
@@ -83,24 +85,59 @@ def _capturar_audio_ia(audio_q: queue.Queue, rec: vosk.KaldiRecognizer, timeout:
     return b"".join(chunks)
 
 
+def _esperar_followup_ia(audio_q: queue.Queue, rec: vosk.KaldiRecognizer) -> bool:
+    """Escucha 6 s con Vosk tras la respuesta IA. True = continuar, False = cerrar/timeout."""
+    print("[ia] ¿otra pregunta? ('no' para continuar, silencio o 'sí'/'eso es todo' para cerrar)...")
+    _drenar_audio(audio_q)
+    rec.Reset()
+    t_fin = time.time() + 6.0
+    while time.time() < t_fin:
+        try:
+            data = audio_q.get(timeout=max(0.1, t_fin - time.time()))
+        except queue.Empty:
+            break
+        if rec.AcceptWaveform(data):
+            texto = json.loads(rec.Result()).get("text", "").lower().strip()
+            if texto:
+                print(f"[ia] followup: '{texto}'")
+                if "no" in texto:
+                    rec.Reset()
+                    return True
+                break
+        else:
+            texto = json.loads(rec.PartialResult()).get("partial", "").lower().strip()
+            if texto and "no" in texto:
+                rec.Reset()
+                return True
+    print("[ia] cerrando modo inteligente.")
+    rec.Reset()
+    return False
+
+
 def _activar_modo_ia_interno(audio_q: queue.Queue, rec: vosk.KaldiRecognizer) -> None:
-    """Captura audio, transcribe con Faster-Whisper, consulta GPT-4o-mini y responde con Edge TTS."""
+    """Captura audio, transcribe con Faster-Whisper, consulta GPT-4o-mini y responde con Edge TTS.
+    Tras cada respuesta abre ventana de 6 s: 'no' continúa, silencio/'sí'/'eso es todo' cierra."""
     from ia import transcribir_whisper, consultar_gpt, hablar_edge  # noqa: PLC0415
-    print("[ia] di tu pregunta...")
-    audio_bytes = _capturar_audio_ia(audio_q, rec)
-    if not audio_bytes:
-        print("[ia] no se capturó audio")
-        return
-    print("[ia] transcribiendo con Faster-Whisper...")
-    texto = transcribir_whisper(audio_bytes)
-    if not texto:
-        print("[ia] no se detectó texto")
-        return
-    print(f"[ia] oído: '{texto}'")
-    print("[ia] consultando GPT-4o-mini...")
-    respuesta = consultar_gpt(texto)
-    print(f"[ia] respuesta: '{respuesta}'")
-    hablar_edge(respuesta)
+
+    while True:
+        print("[ia] di tu pregunta...")
+        audio_bytes = _capturar_audio_ia(audio_q, rec)
+        if not audio_bytes:
+            print("[ia] no se capturó audio")
+            return
+        print("[ia] transcribiendo con Faster-Whisper...")
+        texto = transcribir_whisper(audio_bytes)
+        if not texto:
+            print("[ia] no se detectó texto")
+            return
+        print(f"[ia] oído: '{texto}'")
+        print("[ia] consultando GPT-4o-mini...")
+        respuesta = consultar_gpt(texto)
+        print(f"[ia] respuesta: '{respuesta}'")
+        hablar_edge(respuesta)
+
+        if not _esperar_followup_ia(audio_q, rec):
+            return
 
 
 def _cargar_modelo(model_path: str) -> vosk.Model:
@@ -246,7 +283,7 @@ def escuchar_wake_word(
     _kb_listener.daemon = True
     _kb_listener.start()
 
-    print(f"En espera de {WAKE_WORDS} o tecla | ... Ctrl+C para salir.\n")
+    print("En espera de 'stem' (IA) o 'comando' (comandos) | Ctrl+C para salir.\n")
     print("Presioná T para entrar al modo entrenamiento.")
     print("Presioná I para activar el modo inteligente.\n")
 
@@ -327,26 +364,18 @@ def escuchar_wake_word(
                 if not texto:
                     continue
 
-                # Fix A: detección de wake word por substring (lista WAKE_WORDS)
-                wake = next((w for w in WAKE_WORDS if w in texto), None)
+                # Detección de wake word — IA (stem) o comandos
+                wake_ia  = next((w for w in WAKE_WORD_IA        if w in texto), None)
+                wake_cmd = next((w for w in WAKE_WORDS_COMANDOS if w in texto), None)
+                wake     = wake_ia or wake_cmd
 
                 if dormido:
                     if not wake:
                         continue
                     rec.Reset()
 
-                    # Detectar modo inteligente ANTES de limpiar wake words del texto
-                    es_ia = "inteligente" in texto or f" ia " in f" {texto} "
-
-                    # Fix B: quitar wake word y TODAS sus variantes del texto
-                    # para que texto_a_comando reciba solo la parte del comando
-                    resto = texto
-                    for ww in WAKE_WORDS:
-                        resto = resto.replace(ww, " ")
-                    resto = " ".join(resto.split())   # colapsa espacios múltiples
-
-                    if es_ia:
-                        print(f"[ia] '{wake}' + modo inteligente — di tu pregunta...")
+                    if wake_ia:
+                        print(f"[ia] '{wake_ia}' detectado — di tu pregunta...")
                         _drenar_audio(audio_q)
                         _activar_modo_ia_interno(audio_q, rec_dormido)
                         _drenar_audio(audio_q)
@@ -355,15 +384,21 @@ def escuchar_wake_word(
                         rec.Reset()
                         continue
 
+                    # Fix B: quitar wake word de comandos del texto
+                    resto = texto
+                    for ww in WAKE_WORDS_COMANDOS:
+                        resto = resto.replace(ww, " ")
+                    resto = " ".join(resto.split())
+
                     if resto and es_final:
-                        print(f"[stem] '{wake}' + '{resto}' — procesando al instante")
+                        print(f"[cmd] '{wake_cmd}' + '{resto}' — procesando al instante")
                         texto = resto
                         # cae al bloque de comandos (dormido sigue True)
                     else:
-                        print(f"[stem] activado — di un comando ({int(TIMEOUT_ACTIVO)} s)...")
+                        print(f"[cmd] '{wake_cmd}' — di un comando ({int(TIMEOUT_ACTIVO)} s)...")
                         dormido  = False
                         t_activo = time.time()
-                        rec = rec_activo   # Fix 1: gramática restringida en modo activo
+                        rec = rec_activo
                         rec.Reset()
                         continue
 
