@@ -42,38 +42,49 @@ Diferido a Fase 3:
 
 Fase 2 — EN PROGRESO
 
-Router definido — dos wake words, dos modos:
+Pipeline modo IA — IMPLEMENTADO:
 
-"comando" → Vosk → rapidfuzz → ejecuta directo (~0ms)
-"stem"    → Vosk wake → Faster-Whisper → GPT-4o-mini → Edge TTS
+"stem"    → Vosk wake → Faster-Whisper → GPT-4o-mini streaming → Edge TTS streaming → audio
               ↓ tras respuesta
-           ventana Vosk 6s: "no" → sigue en modo IA | silencio/"sí" → cierra
+           ventana Vosk 6s: "no" → sigue en modo IA | silencio/"sí"/"eso es todo" → cierra
+"comando" → Vosk wake → rapidfuzz → ejecuta directo (~0ms)
 
 - WAKE_WORDS_COMANDOS = ["comando", "comand", "komando"]
 - WAKE_WORD_IA        = stem + variantes fonológicas
 - Tecla I también activa modo IA directamente
-- Faster-Whisper transcribe la pregunta (no es fallback de rapidfuzz, es el STT del modo IA)
-- GPT-4o-mini interpreta y responde en texto plano (≤2 oraciones)
-- Edge TTS sintetiza con voz es-MX-JorgeNeural vía miniaudio + sounddevice
+- GPT stream: acumula tokens, detecta . ? ! → envía cada oración al TTS sin esperar el fin
+- TTS stream: Communicate.stream() → bytes en memoria → miniaudio.decode() → sd.play()
+- Sin archivo temporal en disco
 
-Faster-Whisper — probado y funcionando (whisper-test/):
+Parámetros Faster-Whisper actuales (ia.py):
 
-- Modelo: small, device=cpu, compute_type=float32
-- Fix clave: dtype="float32" en sd.InputStream + .flatten() en concatenate
-- Sin normalización por pico (destruye dinámica con ruido de teclado)
-- Parámetros: beam_size=5, vad_filter=False, condition_on_previous_text=False
-- Archivo de prueba: C:\Users\jeffh\OneDrive\Documentos\Pythom Proyects\whisper-test\
+- Modelo: base, device=cpu, compute_type=int8, cpu_threads=6
+- beam_size=1, best_of=1, vad_filter=True (min_silence_duration_ms=300, threshold=0.5)
+- word_timestamps=False, condition_on_previous_text=False
+- np.ascontiguousarray(arr) antes de transcribir
+
+Latencia medida (estable, aceptada):
+
+- Whisper (base, int8):    ~1.5s
+- GPT-4o-mini streaming:   ~0.8s al primer token
+- Edge TTS streaming:      ~0.9s
+- Total:                   ~3.2s
+
+Optimizaciones aplicadas:
+
+- GPT streaming por oraciones → bajó de 2.9s a ~0.8s ✅
+- Edge TTS streaming → bajó de 1.2s a ~0.9s ✅
+- small → base → mejora ~40% en Whisper ✅
+- beam_size 5 → 1 → reducción adicional ✅
+- vad_filter=True → evita procesar silencios ✅
+- cpu_threads=6 → usa todos los núcleos del Ryzen 5 5500U ✅
+- float32 → int8 → sin mejora significativa en este hardware
 
 Pendiente Fase 2:
 
-- Integrar Faster-Whisper en voz.py como fallback del router
-- GPT-4o-mini para frases libres
-- Edge TTS para respuestas por voz
-- Refactor: separar audio, wake, recognizer en módulos independientes (hacer junto con la integración, no antes)
-
-Próximo paso inmediato
-
-→ Integrar Faster-Whisper en voz.py como capa de fallback cuando rapidfuzz no hace match
+- Pre-cargar modelo Whisper al arranque (eliminar carga en frío ~8s primera vez)
+- Loop de verificación: GPT ejecuta → pregunta si salió bien → screenshot si falla
+- pyautogui + GPT-4o vision para control de PC
 
 Instrucciones para Claude
 
