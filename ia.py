@@ -29,23 +29,60 @@ _tts_ya_reproducido = threading.Event()
 
 VOICE = "es-MX-JorgeNeural"
 
-_SYSTEM_AGENTE = """\
-Eres el agente de acción de Stem, asistente de escritorio en Windows 11.
-El usuario te dará una instrucción en voz. Responde SOLO con JSON válido, sin texto extra:
-{
-  "descripcion": "descripción corta en español de lo que vas a hacer",
-  "codigo": "código Python ejecutable en una sola línea"
-}
-Para abrir URLs usa siempre: subprocess.Popen([r'C:\\\\Program Files\\\\BraveSoftware\\\\Brave-Browser\\\\Application\\\\brave.exe', 'URL'])
-Puedes usar: subprocess, webbrowser, pyautogui, os. No uses librerías externas.\
-"""
+_MAX_INTENTOS_AGENTE = 3
 
-_SYSTEM_CLASIFICAR = (
-    "Responde solo 'accion' o 'conversacion' según si el usuario quiere "
-    "ejecutar algo en el PC o solo hablar."
+_TOOLS_SYSTEM = (
+    "Eres Stem, asistente de escritorio por voz en Windows 11. "
+    "Usa responder_en_voz para preguntas o conversación. "
+    "Usa ejecutar_accion para cualquier tarea en el PC. "
+    "Siempre usa una tool, nunca respondas texto directo."
 )
 
-_MAX_INTENTOS_AGENTE = 3
+_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "responder_en_voz",
+            "description": "Responde una pregunta o conversación en voz al usuario.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "texto": {
+                        "type": "string",
+                        "description": "Respuesta en español, máximo 2 oraciones.",
+                    }
+                },
+                "required": ["texto"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ejecutar_accion",
+            "description": "Ejecuta una acción en el PC del usuario vía Python.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "descripcion": {
+                        "type": "string",
+                        "description": "Descripción corta en español de lo que va a hacer.",
+                    },
+                    "codigo": {
+                        "type": "string",
+                        "description": (
+                            "Código Python ejecutable en una sola línea. "
+                            "Para URLs: subprocess.Popen([r'C:\\Program Files\\BraveSoftware\\"
+                            "Brave-Browser\\Application\\brave.exe', 'URL']). "
+                            "Módulos disponibles: subprocess, os, webbrowser, pyautogui."
+                        ),
+                    },
+                },
+                "required": ["descripcion", "codigo"],
+            },
+        },
+    },
+]
 
 
 def _ts() -> str:
@@ -108,7 +145,8 @@ def _capturar_audio(audio_q: _stdlib_queue.Queue, rec: object, timeout: float = 
     """Captura audio hasta que Vosk detecta silencio final o timeout."""
     chunks: list[bytes] = []
     rec.Reset()
-    t_fin = time.time() + timeout
+    t_inicio = time.time()
+    t_fin    = t_inicio + timeout
     while time.time() < t_fin:
         try:
             data = audio_q.get(timeout=0.5)
@@ -116,7 +154,9 @@ def _capturar_audio(audio_q: _stdlib_queue.Queue, rec: object, timeout: float = 
             continue
         chunks.append(data)
         if rec.AcceptWaveform(data):
-            if json.loads(rec.Result()).get("text", "").strip():
+            result_text = json.loads(rec.Result()).get("text", "").strip()
+            elapsed     = time.time() - t_inicio
+            if result_text and (len(result_text.split()) > 3 or elapsed > 4.0):
                 break
     rec.Reset()
     return b"".join(chunks)
@@ -292,23 +332,6 @@ def hablar_edge(texto: str) -> None:
 
 # ── Modo agente ────────────────────────────────────────────────────────────────
 
-def _clasificar_intencion(texto: str) -> str:
-    """Clasificación rápida vía GPT-4o-mini. Retorna 'accion' o 'conversacion'."""
-    try:
-        resp = _client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": _SYSTEM_CLASIFICAR},
-                {"role": "user",   "content": texto},
-            ],
-            max_tokens=5,
-        )
-        resultado = resp.choices[0].message.content.strip().lower()
-        return "accion" if "accion" in resultado else "conversacion"
-    except Exception:
-        return "conversacion"
-
-
 def _build_exec_ns() -> dict:
     """Namespace para exec() con módulos seguros disponibles al código generado."""
     ns: dict = {"subprocess": subprocess, "os": os, "webbrowser": webbrowser}
@@ -322,22 +345,23 @@ def _build_exec_ns() -> dict:
 
 def _pedir_accion_gpt(texto: str) -> dict | None:
     """
-    Llama GPT-4o-mini con _SYSTEM_AGENTE y parsea JSON.
+    Llama GPT-4o-mini forzando tool ejecutar_accion.
     Retorna dict con 'descripcion' y 'codigo', o None si falla.
     """
     try:
         resp = _client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": _SYSTEM_AGENTE},
+                {"role": "system", "content": _TOOLS_SYSTEM},
                 {"role": "user",   "content": texto},
             ],
+            tools=_TOOLS,
+            tool_choice={"type": "function", "function": {"name": "ejecutar_accion"}},
             max_tokens=200,
-            response_format={"type": "json_object"},
         )
-        return json.loads(resp.choices[0].message.content)
+        return json.loads(resp.choices[0].message.tool_calls[0].function.arguments)
     except Exception as exc:
-        print(f"{_ts()}[agente] error GPT/JSON: {exc}")
+        print(f"{_ts()}[agente] error GPT: {exc}")
         return None
 
 
@@ -392,6 +416,102 @@ def _corregir_con_vision(codigo_fallido: str) -> str | None:
         return None
 
 
+def _ejecutar_con_verificacion(
+    descripcion: str,
+    codigo: str,
+    audio_q: _stdlib_queue.Queue,
+    rec: object,
+) -> str:
+    """
+    Pide confirmación, ejecuta codigo y verifica con hasta _MAX_INTENTOS_AGENTE correcciones.
+    Retorna 'ok' si ejecutado, 'no' si usuario dijo no, 'cancelar' si canceló.
+    """
+    _reproducir_oracion(f"Voy a {descripcion}. ¿Procedo?")
+    confirmacion = _escuchar_confirmacion(audio_q, rec)
+
+    if confirmacion == "cancelar":
+        _reproducir_oracion("Cancelado.")
+        return "cancelar"
+
+    if confirmacion == "no":
+        return "no"
+
+    # "sí" → ejecutar
+    print(f"{_ts()}[agente] ejecutando: {codigo}")
+    try:
+        exec(codigo, _build_exec_ns())  # noqa: S102
+    except Exception as exc:
+        print(f"{_ts()}[agente] exec error: {exc}")
+        _reproducir_oracion("Hubo un error al ejecutar.")
+
+    for intento in range(_MAX_INTENTOS_AGENTE):
+        _reproducir_oracion("¿Salió bien?")
+        verificacion = _escuchar_confirmacion(audio_q, rec)
+
+        if verificacion in ("si", "cancelar"):
+            return "ok"
+
+        print(f"{_ts()}[agente] fallo, corrección {intento + 1}/{_MAX_INTENTOS_AGENTE}...")
+        nuevo_codigo = _corregir_con_vision(codigo)
+
+        if not nuevo_codigo:
+            break
+
+        codigo = nuevo_codigo
+        print(f"{_ts()}[agente] ejecutando corrección: {codigo}")
+        try:
+            exec(codigo, _build_exec_ns())  # noqa: S102
+        except Exception as exc:
+            print(f"{_ts()}[agente] exec error en corrección: {exc}")
+            _reproducir_oracion("Hubo un error al ejecutar.")
+
+    _reproducir_oracion("No pude corregirlo.")
+    return "ok"
+
+
+def decidir_y_actuar(texto: str, audio_q: _stdlib_queue.Queue, rec: object) -> str:
+    """
+    Llama GPT-4o-mini con tool_choice='required' para decidir modo en una sola llamada.
+    - responder_en_voz → hablar_edge() → retorna 'conversacion'
+    - ejecutar_accion  → _ejecutar_con_verificacion() → retorna 'accion'
+    """
+    print(f"{_ts()}[ia] inicio GPT-4o-mini (tool choice)...")
+    try:
+        resp = _client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": _TOOLS_SYSTEM},
+                {"role": "user",   "content": texto},
+            ],
+            tools=_TOOLS,
+            tool_choice="required",
+            max_tokens=200,
+        )
+        tool_call = resp.choices[0].message.tool_calls[0]
+        fn_name   = tool_call.function.name
+        args      = json.loads(tool_call.function.arguments)
+        print(f"{_ts()}[ia] tool: {fn_name}")
+    except Exception as exc:
+        print(f"{_ts()}[ia] error GPT tool call: {exc}")
+        hablar_edge("Hubo un error al procesar tu solicitud.")
+        return "conversacion"
+
+    if fn_name == "responder_en_voz":
+        respuesta = args.get("texto", "")
+        print(f"{_ts()}[ia] respuesta: '{respuesta}'")
+        hablar_edge(respuesta)
+        return "conversacion"
+
+    if fn_name == "ejecutar_accion":
+        descripcion = args.get("descripcion", "algo")
+        codigo      = args.get("codigo", "").strip()
+        print(f"{_ts()}[ia] acción: {descripcion} | código: {codigo}")
+        _ejecutar_con_verificacion(descripcion, codigo, audio_q, rec)
+        return "accion"
+
+    return "conversacion"
+
+
 def activar_modo_agente(audio_q: _stdlib_queue.Queue, rec: object) -> None:
     """
     Modo agente: captura instrucción, genera código con GPT, pide confirmación,
@@ -436,48 +556,11 @@ def activar_modo_agente(audio_q: _stdlib_queue.Queue, rec: object) -> None:
             continue
 
         print(f"{_ts()}[agente] plan: {descripcion} | código: {codigo}")
-        _reproducir_oracion(f"Voy a {descripcion}. ¿Procedo?")
-        confirmacion = _escuchar_confirmacion(audio_q, rec)
+        resultado = _ejecutar_con_verificacion(descripcion, codigo, audio_q, rec)
 
-        if confirmacion == "cancelar":
-            _reproducir_oracion("Cancelado.")
-            return
-
-        if confirmacion == "no":
+        if resultado == "no":
             _reproducir_oracion("Di la acción de nuevo.")
             mostrar_prompt = True
             continue
 
-        # "sí" → ejecutar
-        print(f"{_ts()}[agente] ejecutando: {codigo}")
-        try:
-            exec(codigo, _build_exec_ns())  # noqa: S102
-        except Exception as exc:
-            print(f"{_ts()}[agente] exec error: {exc}")
-            _reproducir_oracion("Hubo un error al ejecutar.")
-
-        # Loop de verificación con hasta _MAX_INTENTOS_AGENTE correcciones
-        for intento in range(_MAX_INTENTOS_AGENTE):
-            _reproducir_oracion("¿Salió bien?")
-            verificacion = _escuchar_confirmacion(audio_q, rec)
-
-            if verificacion in ("si", "cancelar"):
-                return
-
-            # "no" → corrección con visión
-            print(f"{_ts()}[agente] fallo reportado, corrección {intento + 1}/{_MAX_INTENTOS_AGENTE}...")
-            nuevo_codigo = _corregir_con_vision(codigo)
-
-            if not nuevo_codigo:
-                break
-
-            codigo = nuevo_codigo
-            print(f"{_ts()}[agente] ejecutando corrección: {codigo}")
-            try:
-                exec(codigo, _build_exec_ns())  # noqa: S102
-            except Exception as exc:
-                print(f"{_ts()}[agente] exec error en corrección: {exc}")
-                _reproducir_oracion("Hubo un error al ejecutar.")
-
-        _reproducir_oracion("No pude corregirlo.")
         return

@@ -122,11 +122,8 @@ def _esperar_followup_ia(audio_q: queue.Queue, rec: vosk.KaldiRecognizer) -> boo
 
 
 def _activar_modo_ia_interno(audio_q: queue.Queue, rec: vosk.KaldiRecognizer) -> None:
-    """Captura audio, transcribe con Faster-Whisper y bifurca: conversación → GPT, acción → agente."""
-    from ia import (  # noqa: PLC0415
-        transcribir_whisper, consultar_gpt, hablar_edge,
-        _clasificar_intencion, activar_modo_agente,
-    )
+    """Captura audio, transcribe con Faster-Whisper y decide modo vía GPT tool_choice."""
+    from ia import transcribir_whisper, decidir_y_actuar  # noqa: PLC0415
 
     while True:
         print(f"{_ts()}[ia] di tu pregunta...")
@@ -141,16 +138,9 @@ def _activar_modo_ia_interno(audio_q: queue.Queue, rec: vosk.KaldiRecognizer) ->
             return
         print(f"{_ts()}[ia] fin transcripción — oído: '{texto}'")
 
-        print(f"{_ts()}[ia] clasificando intención...")
-        if _clasificar_intencion(texto) == "accion":
-            print(f"{_ts()}[ia] → modo agente")
-            activar_modo_agente(audio_q, rec)
+        modo = decidir_y_actuar(texto, audio_q, rec)
+        if modo == "accion":
             return
-
-        print(f"{_ts()}[ia] inicio GPT-4o-mini...")
-        respuesta = consultar_gpt(texto)
-        print(f"{_ts()}[ia] fin GPT — respuesta: '{respuesta}'")
-        hablar_edge(respuesta)
 
         if not _esperar_followup_ia(audio_q, rec):
             return
