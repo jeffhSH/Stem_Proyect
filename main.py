@@ -6,13 +6,13 @@ import time
 from apps import iniciar_watcher, launch
 from comandos import cargar_variantes_usuario
 from macros import cargar_variantes_usuario_macros
-from voz import MODEL_PATH, escuchar_wake_word, pausar, reanudar
+from voz import MODEL_PATH, escuchar_wake_word, pausar, reanudar, activar_ia
 import training
 
 
 def _listener_entrenamiento() -> None:
     """
-    Hilo daemon: monitorea la consola y activa el modo entrenamiento al presionar T.
+    Hilo daemon: monitorea la consola y activa el modo entrenamiento (T) o IA (I).
     Usa msvcrt para no interferir con input() durante el entrenamiento.
     """
     while True:
@@ -22,6 +22,9 @@ def _listener_entrenamiento() -> None:
                 pausar()
                 training.iniciar()
                 reanudar()
+            elif ch in (b"i", b"I"):
+                activar_ia()
+                print("[ia] modo inteligente activado — habla cuando estés listo...")
         time.sleep(0.05)
 
 
