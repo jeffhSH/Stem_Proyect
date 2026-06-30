@@ -24,6 +24,14 @@ DEBUG_PORT      = 9222
 _driver = None
 
 
+def _buscar_numero(contacto: str, contactos: dict) -> str | None:
+    norm = {k.lower(): v for k, v in contactos.items()}
+    clave = contacto.lower()
+    if clave in norm:
+        return norm[clave]
+    return next((v for k, v in norm.items() if k in clave or clave in k), None)
+
+
 def _puerto_activo() -> bool:
     try:
         s = socket.create_connection(("127.0.0.1", DEBUG_PORT), timeout=1)
@@ -78,9 +86,7 @@ def enviar_whatsapp(contacto: str, mensaje: str) -> bool:
         print(f"[wa] error leyendo contactos.json: {e}")
         return False
 
-    numero = contactos.get(contacto.lower())
-    if not numero:
-        numero = next((v for k, v in contactos.items() if k in contacto.lower()), None)
+    numero = _buscar_numero(contacto, contactos)
     if not numero:
         print(f"[wa] contacto '{contacto}' no encontrado")
         return False
@@ -142,9 +148,7 @@ def enviar_archivo_whatsapp(contacto: str, ruta_archivo: str) -> bool:
         print(f"[wa] error leyendo contactos.json: {e}")
         return False
 
-    numero = contactos.get(contacto.lower())
-    if not numero:
-        numero = next((v for k, v in contactos.items() if k in contacto.lower()), None)
+    numero = _buscar_numero(contacto, contactos)
     if not numero:
         print(f"[wa] contacto '{contacto}' no encontrado")
         return False
