@@ -446,6 +446,32 @@ def _get_escritorio() -> str:
         return os.path.join(os.path.expanduser("~"), "Desktop")
 
 
+def _get_descargas() -> str:
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
+        )
+        path, _ = winreg.QueryValueEx(key, "{374DE290-123F-4565-9164-39C4925E467B}")
+        return path
+    except Exception:
+        return os.path.join(os.path.expanduser("~"), "Downloads")
+
+
+def _get_documentos() -> str:
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
+        )
+        path, _ = winreg.QueryValueEx(key, "Personal")
+        return path
+    except Exception:
+        return os.path.join(os.path.expanduser("~"), "Documents")
+
+
 def _listar_carpeta(carpeta: str) -> list[str]:
     """Lista archivos de una carpeta del sistema. Retorna lista de nombres."""
     try:
@@ -493,11 +519,13 @@ def _build_exec_ns() -> dict:
     """Namespace para exec() con módulos seguros disponibles al código generado."""
     import shutil
     ns: dict = {
-        "subprocess":    subprocess,
-        "os":            os,
-        "webbrowser":    webbrowser,
-        "shutil":        shutil,
+        "subprocess":      subprocess,
+        "os":              os,
+        "webbrowser":      webbrowser,
+        "shutil":          shutil,
         "_get_escritorio": _get_escritorio,
+        "_get_descargas":  _get_descargas,
+        "_get_documentos": _get_documentos,
     }
     try:
         import pyautogui
@@ -619,15 +647,30 @@ def _escuchar_confirmacion_debug() -> str:
         return "cancelar"
 
 
+_LOG_DIR  = os.path.join(os.path.dirname(__file__), "logs")
+_LOG_PATH = os.path.join(_LOG_DIR, "agente_errores.log")
+
+
+def _log_exec_error(exc: Exception) -> None:
+    try:
+        os.makedirs(_LOG_DIR, exist_ok=True)
+        ts  = datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
+        msg = f"{ts} {type(exc).__name__}: {exc}\n"
+        with open(_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(msg)
+    except Exception:
+        pass
+
+
 def _ejecutar_con_verificacion(
     descripcion: str,
     codigo: str,
     audio_q: _stdlib_queue.Queue,
     rec: object,
     youtube_query: str | None = None,
-) -> None:
+) -> bool:
     if _cancelado():
-        return
+        return False
 
     _resultado_yt: list[str | None] = [None]
     _hilo_yt: threading.Thread | None = None
@@ -642,12 +685,12 @@ def _ejecutar_con_verificacion(
         mensaje = descripcion
 
     if _cancelado():
-        return
+        return False
 
     _reproducir_oracion(f"{mensaje}. ¿Procedo?")
 
     if _cancelado():
-        return
+        return False
 
     if DEBUG_TEXTO:
         confirmacion = _escuchar_confirmacion_debug()
@@ -656,7 +699,7 @@ def _ejecutar_con_verificacion(
 
     if _cancelado() or confirmacion in ("no", "cancelar"):
         _reproducir_oracion("Cancelado.")
-        return
+        return False
 
     if youtube_query:
         if _hilo_yt:
@@ -671,13 +714,22 @@ def _ejecutar_con_verificacion(
             fallback = f"https://www.youtube.com/results?search_query={urllib.parse.quote(youtube_query)}"
             subprocess.Popen([brave, fallback])
             _reproducir_oracion("No encontré el video exacto, abriendo búsqueda.")
+        return True
     else:
         print(f"{_ts()}[agente] ejecutando: {codigo}")
         try:
             exec(codigo, _build_exec_ns())  # noqa: S102
+            return True
+        except NameError as exc:
+            print(f"{_ts()}[agente] GPT intentó usar un helper inexistente: {exc}")
+            _log_exec_error(exc)
+            _reproducir_oracion("Hubo un error al ejecutar.")
+            return False
         except Exception as exc:
             print(f"{_ts()}[agente] exec error: {exc}")
+            _log_exec_error(exc)
             _reproducir_oracion("Hubo un error al ejecutar.")
+            return False
 
 
 def decidir_y_actuar(texto: str, audio_q: _stdlib_queue.Queue, rec: object) -> str:
@@ -715,7 +767,7 @@ def decidir_y_actuar(texto: str, audio_q: _stdlib_queue.Queue, rec: object) -> s
         {"role": "user",   "content": texto},
     ]
 
-    MAX_RONDAS = 4
+    MAX_RONDAS = 6
     for ronda in range(MAX_RONDAS):
         if _cancelado():
             return "conversacion"
@@ -728,6 +780,7 @@ def decidir_y_actuar(texto: str, audio_q: _stdlib_queue.Queue, rec: object) -> s
                 tools=_TOOLS,
                 tool_choice="required",
                 max_tokens=300,
+                parallel_tool_calls=False,
             )
         except Exception as exc:
             print(f"{_ts()}[ia] error GPT: {exc}")
@@ -764,13 +817,18 @@ def decidir_y_actuar(texto: str, audio_q: _stdlib_queue.Queue, rec: object) -> s
         if tool_name == "ejecutar_accion":
             codigo = args.get("codigo", "").strip()
             print(f"{_ts()}[ia] acción: {codigo}")
-            _ejecutar_con_verificacion(
+            exito = _ejecutar_con_verificacion(
                 descripcion=args.get("descripcion", "Ejecutando acción"),
                 codigo=codigo,
                 audio_q=audio_q,
                 rec=rec,
             )
-            return "accion"
+            messages.append({
+                "role":         "tool",
+                "tool_call_id": tool_call.id,
+                "content":      json.dumps({"exito": exito}, ensure_ascii=False),
+            })
+            continue
 
         if tool_name == "buscar_y_abrir_youtube":
             query = args.get("query", "")

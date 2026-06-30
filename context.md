@@ -80,11 +80,49 @@ Optimizaciones aplicadas:
 - cpu_threads=6 → usa todos los núcleos del Ryzen 5 5500U ✅
 - float32 → int8 → sin mejora significativa en este hardware
 
+Optimizaciones de descripción TTS:
+
+- traductor_acciones.py eliminado — GPT ya genera campo `descripcion` en español en ejecutar_accion
+- _ejecutar_con_verificacion ahora usa descripcion=args.get("descripcion") directo para el TTS de confirmación
+- Resultado: sin regex parsing, descripción siempre en lenguaje natural correcto
+
+WhatsApp vía Selenium — COMPLETO:
+
+- whatsapp.py — módulo independiente con enviar_whatsapp(contacto, mensaje) y enviar_archivo_whatsapp(contacto, ruta_archivo)
+- Singleton driver: una sola instancia de Brave WebDriver reutilizada entre llamadas (sin recargar la página)
+- Perfil dedicado Stem_WA en AppData/Local/Brave/Profiles para mantener sesión de WhatsApp Web sin QR
+- Buscador interno de WhatsApp Web: busca contacto por nombre en el input de búsqueda, sin navegar a URL con número
+- Manejo del diálogo nativo de Windows "Brave quiere abrir..." al adjuntar archivos (send_keys directo al input file)
+- contactos.json en raíz: dict nombre → número internacional (solo necesario para enviar_whatsapp por número)
+- Tool GPT: enviar_archivo_whatsapp con parámetros contacto y ruta_archivo; retorna bool
+- Probado en producción: texto y archivos funcionando end-to-end
+
+Tool loop multi-ronda — IMPLEMENTADO:
+
+- MAX_RONDAS=6 (subido desde 4)
+- ejecutar_accion encadena con continue (antes hacía return), devuelve {"exito": bool} como tool result
+- parallel_tool_calls=False en chat.completions.create para evitar tool_calls simultáneas
+- Helpers de rutas en _build_exec_ns(): _get_escritorio(), _get_descargas(), _get_documentos()
+  (todos leen desde winreg Shell Folders para compatibilidad con OneDrive-redirect)
+- NameError en exec() → log explícito en consola + append a logs/agente_errores.log
+- logs/ en .gitignore (no se versiona)
+
+Test de precisión (test_agente_nodos.py):
+
+- 50 pruebas generadas dinámicamente en runtime (2–4 nodos por prueba)
+- Nodos posibles: crear archivo texto, abrir YouTube, enviar WhatsApp (texto y archivo)
+- Resultado: ~94% precisión promedio (47/50 exitosas)
+- 3 fallos: GPT invocaba _get_descargas()/_get_documentos() inexistentes → NameError → agotaban MAX_RONDAS
+- Bug corregido: helpers añadidos a _build_exec_ns() en commit a03db6d
+
 Pendiente Fase 2:
 
+- Recordatorios
+- Mensajes programados
+- Comprimir/descomprimir archivos
+- Indicador visual (overlay/notificación) de Stem activo
+- Protección contra alucinaciones/falsos positivos de GPT en el tool loop
 - Pre-cargar modelo Whisper al arranque (eliminar carga en frío ~8s primera vez)
-- Loop de verificación: GPT ejecuta → pregunta si salió bien → screenshot si falla
-- pyautogui + GPT-4o vision para control de PC
 
 Instrucciones para Claude
 
