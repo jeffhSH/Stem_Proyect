@@ -47,6 +47,9 @@ _TOOLS_SYSTEM = (
     "para rutas de Windows. "
     "Usa enviar_archivo_whatsapp para enviar archivos por WhatsApp, siempre "
     "después de explorar_carpeta para obtener la ruta exacta. "
+    "Cuando el usuario quiera enviar el mismo mensaje a varios contactos, "
+    "pasa la lista completa en el parámetro 'contacto' de una sola llamada "
+    "a enviar_whatsapp en vez de llamarla varias veces. "
     "Siempre usa una tool, nunca respondas texto directo."
 )
 
@@ -135,13 +138,16 @@ _TOOLS = [
         "type": "function",
         "function": {
             "name": "enviar_whatsapp",
-            "description": "Envía un mensaje de WhatsApp a un contacto guardado.",
+            "description": "Envía un mensaje de WhatsApp a uno o varios contactos guardados.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "contacto": {
-                        "type": "string",
-                        "description": "Nombre del contacto tal como aparece en la agenda (ej: 'mama', 'juan').",
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                        ],
+                        "description": "Nombre del contacto o lista de nombres cuando el mensaje es para varios destinatarios (ej: 'mama' o ['mama', 'juan']).",
                     },
                     "mensaje": {
                         "type": "string",

@@ -79,66 +79,85 @@ def _get_driver() -> webdriver.Chrome:
     return _driver
 
 
-def enviar_whatsapp(contacto: str, mensaje: str) -> bool:
+def _enviar_uno(contacto: str, numero: str, mensaje: str, driver) -> bool:
+    if "web.whatsapp.com" in driver.current_url:
+        print(f"[wa] Usando buscador interno → {contacto}")
+        try:
+            buscador = WebDriverWait(driver, 8).until(
+                EC.element_to_be_clickable((By.XPATH, '//input[@data-tab="3"]'))
+            )
+            buscador.click()
+            buscador.clear()
+            buscador.send_keys(numero)
+            time.sleep(1.5)
+            buscador.send_keys(Keys.ENTER)
+            time.sleep(1)
+
+            cuadro = WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located(
+                    (By.XPATH, '//div[@id="main"]//div[@contenteditable="true" and @role="textbox"]')
+                )
+            )
+            cuadro.send_keys(mensaje)
+            time.sleep(0.5)
+            cuadro.send_keys(Keys.ENTER)
+            time.sleep(1)
+            print(f"[wa] ✓ enviado a '{contacto}' (sin recarga)")
+            return True
+
+        except Exception as e:
+            print(f"[wa] buscador interno falló ({e}) → fallback URL")
+
+    print(f"[wa] Cargando WhatsApp Web → {contacto}")
+    url = f"https://web.whatsapp.com/send?phone={numero}&text={urllib.parse.quote(mensaje)}"
+    driver.get(url)
+    cuadro = WebDriverWait(driver, 30).until(
+        EC.presence_of_element_located(
+            (By.XPATH, '//div[@contenteditable="true" and @role="textbox"]')
+        )
+    )
+    time.sleep(1.5)
+    cuadro.send_keys(Keys.ENTER)
+    time.sleep(1)
+    print(f"[wa] ✓ enviado a '{contacto}'")
+    return True
+
+
+def enviar_whatsapp(contacto: str | list[str], mensaje: str) -> bool:
     try:
         contactos = json.loads(CONTACTOS_PATH.read_text(encoding="utf-8"))
     except Exception as e:
         print(f"[wa] error leyendo contactos.json: {e}")
         return False
 
-    numero = _buscar_numero(contacto, contactos)
-    if not numero:
-        print(f"[wa] contacto '{contacto}' no encontrado")
-        return False
+    nombres = [contacto] if isinstance(contacto, str) else contacto
 
     try:
         driver = _get_driver()
-
-        if "web.whatsapp.com" in driver.current_url:
-            print(f"[wa] Usando buscador interno → {contacto}")
-            try:
-                buscador = WebDriverWait(driver, 8).until(
-                    EC.element_to_be_clickable((By.XPATH, '//input[@data-tab="3"]'))
-                )
-                buscador.click()
-                buscador.clear()
-                buscador.send_keys(numero)
-                time.sleep(1.5)
-                buscador.send_keys(Keys.ENTER)
-                time.sleep(1)
-
-                cuadro = WebDriverWait(driver, 15).until(
-                    EC.presence_of_element_located(
-                        (By.XPATH, '//div[@id="main"]//div[@contenteditable="true" and @role="textbox"]')
-                    )
-                )
-                cuadro.send_keys(mensaje)
-                time.sleep(0.5)
-                cuadro.send_keys(Keys.ENTER)
-                time.sleep(1)
-                print(f"[wa] ✓ enviado a '{contacto}' (sin recarga)")
-                return True
-
-            except Exception as e:
-                print(f"[wa] buscador interno falló ({e}) → fallback URL")
-
-        print(f"[wa] Cargando WhatsApp Web → {contacto}")
-        url = f"https://web.whatsapp.com/send?phone={numero}&text={urllib.parse.quote(mensaje)}"
-        driver.get(url)
-        cuadro = WebDriverWait(driver, 30).until(
-            EC.presence_of_element_located(
-                (By.XPATH, '//div[@contenteditable="true" and @role="textbox"]')
-            )
-        )
-        time.sleep(1.5)
-        cuadro.send_keys(Keys.ENTER)
-        time.sleep(1)
-        print(f"[wa] ✓ enviado a '{contacto}'")
-        return True
-
     except Exception as e:
-        print(f"[wa] error: {e}")
+        print(f"[wa] error obteniendo driver: {e}")
         return False
+
+    exitosos: list[str] = []
+    fallidos: list[str] = []
+    for nombre in nombres:
+        numero = _buscar_numero(nombre, contactos)
+        if not numero:
+            print(f"[wa] contacto '{nombre}' no encontrado")
+            fallidos.append(nombre)
+            continue
+        try:
+            if _enviar_uno(nombre, numero, mensaje, driver):
+                exitosos.append(nombre)
+            else:
+                fallidos.append(nombre)
+        except Exception as e:
+            print(f"[wa] error enviando a '{nombre}': {e}")
+            fallidos.append(nombre)
+
+    if fallidos:
+        print(f"[wa] enviados: {exitosos} | fallidos: {fallidos}")
+    return len(fallidos) == 0
 
 
 def enviar_archivo_whatsapp(contacto: str, ruta_archivo: str) -> bool:
