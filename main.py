@@ -1,13 +1,55 @@
+import msvcrt
 import sys
+import threading
+import time
+
+import keyboard
 
 from apps import iniciar_watcher, launch
-from voz import MODEL_PATH, escuchar_wake_word
+from comandos import cargar_variantes_usuario
+from macros import cargar_variantes_usuario_macros
+from ia import precargar_whisper, _cancelar
+from voz import MODEL_PATH, escuchar_wake_word, pausar, reanudar, activar_ia
+from whatsapp import _lanzar_brave
+import training
+
+
+def _listener_entrenamiento() -> None:
+    """
+    Hilo daemon: monitorea la consola y activa el modo entrenamiento (T) o IA (I).
+    Usa msvcrt para no interferir con input() durante el entrenamiento.
+    """
+    while True:
+        if msvcrt.kbhit():
+            ch = msvcrt.getch()
+            if ch in (b"t", b"T"):
+                pausar()
+                training.iniciar()
+                reanudar()
+            elif ch in (b"i", b"I"):
+                activar_ia()
+                print("[ia] modo inteligente activado — habla cuando estés listo...")
+        time.sleep(0.05)
 
 
 def main() -> None:
     model_path = sys.argv[1] if len(sys.argv) > 1 else MODEL_PATH
 
+    cargar_variantes_usuario()
+    cargar_variantes_usuario_macros()
     iniciar_watcher()
+    precargar_whisper()
+
+    def _watch_esc():
+        while True:
+            keyboard.wait('esc')
+            _cancelar.set()
+            print("[stem] ESC — cancelando...")
+
+    threading.Thread(target=_lanzar_brave, daemon=True).start()
+    threading.Thread(target=_listener_entrenamiento, daemon=True).start()
+    threading.Thread(target=_watch_esc, daemon=True).start()
+
     escuchar_wake_word(launch, model_path)
 
 
