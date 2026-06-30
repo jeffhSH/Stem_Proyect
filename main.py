@@ -10,7 +10,7 @@ from comandos import cargar_variantes_usuario
 from macros import cargar_variantes_usuario_macros
 from ia import precargar_whisper, _cancelar
 from voz import MODEL_PATH, escuchar_wake_word, pausar, reanudar, activar_ia
-from whatsapp import iniciar_brave_debug
+from whatsapp import _lanzar_brave
 import training
 
 
@@ -39,7 +39,6 @@ def main() -> None:
     cargar_variantes_usuario_macros()
     iniciar_watcher()
     precargar_whisper()
-    iniciar_brave_debug()
 
     def _watch_esc():
         while True:
@@ -47,6 +46,7 @@ def main() -> None:
             _cancelar.set()
             print("[stem] ESC — cancelando...")
 
+    threading.Thread(target=_lanzar_brave, daemon=True).start()
     threading.Thread(target=_listener_entrenamiento, daemon=True).start()
     threading.Thread(target=_watch_esc, daemon=True).start()
 
