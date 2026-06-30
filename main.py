@@ -11,6 +11,7 @@ from macros import cargar_variantes_usuario_macros
 from ia import precargar_whisper, _cancelar
 from voz import MODEL_PATH, escuchar_wake_word, pausar, reanudar, activar_ia
 from whatsapp import _lanzar_brave
+from hud_control import lanzar_hud, cerrar_hud
 import training
 
 
@@ -49,8 +50,12 @@ def main() -> None:
     threading.Thread(target=_lanzar_brave, daemon=True).start()
     threading.Thread(target=_listener_entrenamiento, daemon=True).start()
     threading.Thread(target=_watch_esc, daemon=True).start()
+    lanzar_hud()
 
-    escuchar_wake_word(launch, model_path)
+    try:
+        escuchar_wake_word(launch, model_path)
+    finally:
+        cerrar_hud()
 
 
 if __name__ == "__main__":

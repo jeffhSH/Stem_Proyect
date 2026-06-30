@@ -21,6 +21,29 @@ WAKE_WORDS_COMANDOS = ["comando", "comand", "komando"]
 WAKE_WORD_IA        = ["stem", "estén", "stein", "steam", "stand", "steve", "están", "sten", "esteam", "stern"]
 TIMEOUT_ACTIVO = 6.0
 
+_USER_WAKEWORDS_PATH = Path(__file__).parent / "user_wakewords.json"
+
+
+def _cargar_wakewords_usuario() -> None:
+    """Fusiona variantes de usuario (user_wakewords.json) con las listas de wake words en memoria."""
+    if not _USER_WAKEWORDS_PATH.exists():
+        return
+    try:
+        datos = json.loads(_USER_WAKEWORDS_PATH.read_text(encoding="utf-8"))
+        for w in datos.get("ia", []):
+            if w not in WAKE_WORDS:
+                WAKE_WORDS.append(w)
+            if w not in WAKE_WORD_IA:
+                WAKE_WORD_IA.append(w)
+        for w in datos.get("comando", []):
+            if w not in WAKE_WORDS_COMANDOS:
+                WAKE_WORDS_COMANDOS.append(w)
+    except Exception:
+        pass
+
+
+_cargar_wakewords_usuario()
+
 # Modelo cargado (accesible por training.py sin recarga)
 _modelo_activo: vosk.Model | None = None
 # Señal de pausa durante el modo entrenamiento
@@ -123,27 +146,50 @@ def _esperar_followup_ia(audio_q: queue.Queue, rec: vosk.KaldiRecognizer) -> boo
 
 def _activar_modo_ia_interno(audio_q: queue.Queue, rec: vosk.KaldiRecognizer) -> None:
     """Captura audio, transcribe con Faster-Whisper y decide modo vía GPT tool_choice."""
-    from ia import transcribir_whisper, decidir_y_actuar  # noqa: PLC0415
+    from ia import transcribir_whisper, decidir_y_actuar, DEBUG_TEXTO, _cancelar  # noqa: PLC0415
+    try:
+        from hud_control import set_estado, set_transcripcion  # noqa: PLC0415
+    except ImportError:
+        def set_estado(*a, **kw): pass       # noqa: E704
+        def set_transcripcion(*a): pass      # noqa: E704
 
-    while True:
-        print(f"{_ts()}[ia] di tu pregunta...")
-        audio_bytes = _capturar_audio_ia(audio_q, rec)
-        if not audio_bytes:
-            print(f"{_ts()}[ia] no se capturó audio")
-            return
-        print(f"{_ts()}[ia] inicio transcripción Faster-Whisper...")
-        texto = transcribir_whisper(audio_bytes)
-        if not texto:
-            print(f"{_ts()}[ia] no se detectó texto")
-            return
-        print(f"{_ts()}[ia] fin transcripción — oído: '{texto}'")
+    _cancelar.clear()
 
-        modo = decidir_y_actuar(texto, audio_q, rec)
-        if modo == "accion":
-            return
+    try:
+        while True:
+            set_estado("procesando")
 
-        if not _esperar_followup_ia(audio_q, rec):
-            return
+            if DEBUG_TEXTO:
+                print(f"{_ts()}[ia] di tu pregunta (debug)...")
+                try:
+                    texto = input("[DEBUG] escribe tu pregunta: ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    return
+                if not texto:
+                    return
+                set_transcripcion(texto)
+            else:
+                print(f"{_ts()}[ia] di tu pregunta...")
+                audio_bytes = _capturar_audio_ia(audio_q, rec)
+                if not audio_bytes:
+                    print(f"{_ts()}[ia] no se capturó audio")
+                    return
+                print(f"{_ts()}[ia] inicio transcripción Faster-Whisper...")
+                texto = transcribir_whisper(audio_bytes)
+                if not texto:
+                    print(f"{_ts()}[ia] no se detectó texto")
+                    return
+                print(f"{_ts()}[ia] fin transcripción — oído: '{texto}'")
+                set_transcripcion(texto)
+
+            modo = decidir_y_actuar(texto, audio_q, rec)
+            if modo == "accion":
+                return
+
+            if not _esperar_followup_ia(audio_q, rec):
+                return
+    finally:
+        set_estado("idle")
 
 
 def _cargar_modelo(model_path: str) -> vosk.Model:
@@ -348,9 +394,9 @@ def escuchar_wake_word(
                     rec = rec_dormido   # Fix 1
                     rec.Reset()
 
-                # Amplificación 50% con clip para evitar overflow int16
+                # Amplificación 150% con clip para evitar overflow int16
                 arr  = np.frombuffer(data, dtype=np.int16)
-                arr  = np.clip(arr.astype(np.float32) * 1.5, -32768, 32767).astype(np.int16)
+                arr  = np.clip(arr.astype(np.float32) * 2.5, -32768, 32767).astype(np.int16)
                 data = arr.tobytes()
 
                 # Diagnóstico: RMS del chunk

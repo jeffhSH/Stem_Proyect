@@ -21,6 +21,12 @@ from openai import OpenAI
 
 load_dotenv(Path(__file__).parent / ".env")
 
+try:
+    from hud_control import set_estado as _hud_set_estado, set_transcripcion as _hud_set_tx
+except ImportError:
+    def _hud_set_estado(*a, **kw): pass   # noqa: E704
+    def _hud_set_tx(*a): pass             # noqa: E704
+
 _client             = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 _modelo_whisper: WhisperModel | None = None
 _whisper_lock       = threading.Lock()
@@ -785,6 +791,7 @@ def decidir_y_actuar(texto: str, audio_q: _stdlib_queue.Queue, rec: object) -> s
         if _cancelado():
             return "conversacion"
 
+        _hud_set_estado("procesando", ronda=ronda + 1, max_rondas=MAX_RONDAS)
         print(f"{_ts()}[ia] GPT-4o-mini ronda {ronda + 1}...")
         try:
             resp = _client.chat.completions.create(
@@ -797,6 +804,7 @@ def decidir_y_actuar(texto: str, audio_q: _stdlib_queue.Queue, rec: object) -> s
             )
         except Exception as exc:
             print(f"{_ts()}[ia] error GPT: {exc}")
+            _hud_set_estado("hablando")
             hablar_edge("Hubo un error al procesar tu solicitud.")
             return "conversacion"
 
@@ -824,6 +832,7 @@ def decidir_y_actuar(texto: str, audio_q: _stdlib_queue.Queue, rec: object) -> s
         if tool_name == "responder_en_voz":
             respuesta = args.get("texto", "")
             print(f"{_ts()}[ia] respuesta: '{respuesta}'")
+            _hud_set_estado("hablando")
             hablar_edge(respuesta)
             return "conversacion"
 
@@ -862,6 +871,7 @@ def decidir_y_actuar(texto: str, audio_q: _stdlib_queue.Queue, rec: object) -> s
                 print(f"{_ts()}[ia] whatsapp → {e.get('contacto')}: {e.get('mensaje')}")
             ok = enviar_whatsapp(envios)
             if not ok:
+                _hud_set_estado("hablando")
                 hablar_edge("No pude enviar uno o más mensajes.")
             return "accion"
 
@@ -872,10 +882,12 @@ def decidir_y_actuar(texto: str, audio_q: _stdlib_queue.Queue, rec: object) -> s
             print(f"{_ts()}[ia] whatsapp archivo → {contacto}: {ruta_archivo}")
             ok = enviar_archivo_whatsapp(contacto, ruta_archivo)
             if not ok:
+                _hud_set_estado("hablando")
                 hablar_edge("No pude enviar el archivo.")
             return "accion"
 
     print(f"{_ts()}[ia] agotó rondas sin acción final")
+    _hud_set_estado("hablando")
     hablar_edge("No pude completar la acción.")
     return "conversacion"
 
