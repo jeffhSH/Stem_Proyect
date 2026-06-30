@@ -47,9 +47,9 @@ _TOOLS_SYSTEM = (
     "para rutas de Windows. "
     "Usa enviar_archivo_whatsapp para enviar archivos por WhatsApp, siempre "
     "después de explorar_carpeta para obtener la ruta exacta. "
-    "Cuando el usuario quiera enviar el mismo mensaje a varios contactos, "
-    "pasa la lista completa en el parámetro 'contacto' de una sola llamada "
-    "a enviar_whatsapp en vez de llamarla varias veces. "
+    "Cuando el usuario quiera enviar mensajes por WhatsApp (iguales o distintos "
+    "por contacto), arma un item en 'envios' por cada destinatario y llama "
+    "enviar_whatsapp una sola vez. "
     "Siempre usa una tool, nunca respondas texto directo."
 )
 
@@ -138,23 +138,30 @@ _TOOLS = [
         "type": "function",
         "function": {
             "name": "enviar_whatsapp",
-            "description": "Envía un mensaje de WhatsApp a uno o varios contactos guardados.",
+            "description": "Envía mensajes de WhatsApp a uno o varios contactos en una sola llamada. Cada item de 'envios' tiene su propio contacto y mensaje (pueden ser iguales o distintos por persona).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "contacto": {
-                        "anyOf": [
-                            {"type": "string"},
-                            {"type": "array", "items": {"type": "string"}},
-                        ],
-                        "description": "Nombre del contacto o lista de nombres cuando el mensaje es para varios destinatarios (ej: 'mama' o ['mama', 'juan']).",
-                    },
-                    "mensaje": {
-                        "type": "string",
-                        "description": "Texto del mensaje a enviar.",
+                    "envios": {
+                        "type": "array",
+                        "description": "Lista de envíos. Un item por destinatario.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "contacto": {
+                                    "type": "string",
+                                    "description": "Nombre del contacto tal como aparece en la agenda.",
+                                },
+                                "mensaje": {
+                                    "type": "string",
+                                    "description": "Texto del mensaje para este contacto.",
+                                },
+                            },
+                            "required": ["contacto", "mensaje"],
+                        },
                     },
                 },
-                "required": ["contacto", "mensaje"],
+                "required": ["envios"],
             },
         },
     },
@@ -850,12 +857,12 @@ def decidir_y_actuar(texto: str, audio_q: _stdlib_queue.Queue, rec: object) -> s
 
         if tool_name == "enviar_whatsapp":
             from whatsapp import enviar_whatsapp  # noqa: PLC0415
-            contacto   = args.get("contacto", "")
-            mensaje_wa = args.get("mensaje", "")
-            print(f"{_ts()}[ia] whatsapp → {contacto}: {mensaje_wa}")
-            ok = enviar_whatsapp(contacto, mensaje_wa)
+            envios = args.get("envios", [])
+            for e in envios:
+                print(f"{_ts()}[ia] whatsapp → {e.get('contacto')}: {e.get('mensaje')}")
+            ok = enviar_whatsapp(envios)
             if not ok:
-                hablar_edge("No encontré ese contacto.")
+                hablar_edge("No pude enviar uno o más mensajes.")
             return "accion"
 
         if tool_name == "enviar_archivo_whatsapp":

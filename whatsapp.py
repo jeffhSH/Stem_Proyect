@@ -123,14 +123,12 @@ def _enviar_uno(contacto: str, numero: str, mensaje: str, driver) -> bool:
     return True
 
 
-def enviar_whatsapp(contacto: str | list[str], mensaje: str) -> bool:
+def enviar_whatsapp(envios: list[dict]) -> bool:
     try:
         contactos = json.loads(CONTACTOS_PATH.read_text(encoding="utf-8"))
     except Exception as e:
         print(f"[wa] error leyendo contactos.json: {e}")
         return False
-
-    nombres = [contacto] if isinstance(contacto, str) else contacto
 
     try:
         driver = _get_driver()
@@ -140,8 +138,10 @@ def enviar_whatsapp(contacto: str | list[str], mensaje: str) -> bool:
 
     exitosos: list[str] = []
     fallidos: list[str] = []
-    for nombre in nombres:
-        numero = _buscar_numero(nombre, contactos)
+    for item in envios:
+        nombre  = item.get("contacto", "")
+        mensaje = item.get("mensaje", "")
+        numero  = _buscar_numero(nombre, contactos)
         if not numero:
             print(f"[wa] contacto '{nombre}' no encontrado")
             fallidos.append(nombre)
