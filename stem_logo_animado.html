@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Stem logo — animación de entrada</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
+
+  :root{
+    --cyan: #1ea7d6;
+    --ink: #16313d;
+  }
+  *{ box-sizing:border-box; }
+  body{
+    margin:0; min-height:100vh;
+    background: linear-gradient(160deg, #eef5f8 0%, #dbe8ee 100%);
+    font-family:'Space Grotesk', sans-serif; color:var(--ink);
+    padding:48px; display:flex; flex-direction:column; gap:40px; align-items:flex-start;
+  }
+  h2{ font-size:14px; letter-spacing:.06em; text-transform:uppercase; color:#5b7884; margin:0 0 18px; font-weight:600;}
+  .card{
+    background:rgba(255,255,255,0.7);
+    border:1px solid rgba(30,167,214,0.25);
+    border-radius:14px;
+    padding:28px 36px;
+    display:flex; align-items:center; gap:24px;
+  }
+  .scale-note{ font-family:'JetBrains Mono', monospace; font-size:11px; color:#7c8d93; margin-top:10px;}
+  .replay{
+    font-family:'JetBrains Mono', monospace; font-size:11px; color:#1ea7d6;
+    background:rgba(30,167,214,0.08); border:1px solid rgba(30,167,214,0.3);
+    border-radius:6px; padding:6px 12px; cursor:pointer; align-self:flex-start;
+  }
+  .replay:hover{ background:rgba(30,167,214,0.16); }
+
+  /* ---------- LOGO ---------- */
+  .logo{
+    display:flex; align-items:center; gap:9px;
+    font-weight:700; font-size:14px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink);
+  }
+  .logo svg{ display:block; flex-shrink:0; }
+
+  .wordmark{ display:inline-flex; }
+  .wordmark span{ display:inline-block; }
+
+  /* S and M visible immediately */
+  .letter-anchor{ opacity:1; }
+
+  /* T and E enter, pushing S and M apart */
+  .letter-insert{
+    display:inline-block;
+    max-width:0;
+    opacity:0;
+    transform:translateY(2px);
+    overflow:hidden;
+    white-space:nowrap;
+    animation: insertLetter 0.55s cubic-bezier(.2,.9,.3,1.3) forwards;
+  }
+  .letter-insert.e{ animation-delay: .55s; }
+  .letter-insert.t{ animation-delay: .35s; }
+
+  @keyframes insertLetter{
+    0%{ max-width:0; opacity:0; transform:translateY(2px); }
+    60%{ opacity:1; }
+    100%{ max-width:20px; opacity:1; transform:translateY(0); }
+  }
+
+  .stem-accent{ color:var(--cyan); }
+
+  /* icon subtle pulse on load, syncs with letters settling */
+  .logo svg .robot-fill{ animation: iconPulse 1.4s ease-out; }
+  @keyframes iconPulse{
+    0%{ opacity:.3; }
+    40%{ opacity:1; }
+    100%{ opacity:1; }
+  }
+</style>
+</head>
+<body>
+
+<h2>Animación de entrada del wordmark — S, M fijas / T, E insertándose</h2>
+
+<button class="replay" onclick="location.reload()">↻ reiniciar animación</button>
+
+<div class="card">
+  <div class="logo">
+    <svg width="36" height="36" viewBox="0 0 64 64" fill="none" stroke="#1ea7d6" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="20" y1="14" x2="16" y2="6"/>
+      <line x1="44" y1="14" x2="48" y2="6"/>
+      <circle class="robot-fill" cx="16" cy="6" r="2" fill="#1ea7d6" stroke="none"/>
+      <circle class="robot-fill" cx="48" cy="6" r="2" fill="#1ea7d6" stroke="none"/>
+      <rect x="10" y="14" width="44" height="30" rx="4"/>
+      <circle class="robot-fill" cx="25" cy="29" r="3.5" fill="#1ea7d6" stroke="none"/>
+      <circle class="robot-fill" cx="39" cy="29" r="3.5" fill="#1ea7d6" stroke="none"/>
+    </svg>
+    <span class="wordmark">
+      <span class="letter-anchor">S</span><span class="letter-insert t">T</span><span class="letter-insert e stem-accent">E</span><span class="letter-anchor">M</span>
+    </span>
+  </div>
+</div>
+<div class="scale-note">ícono 36px (≈+25% vs el anterior de 18px en pantalla de 96px) · letra 14px (antes 13px en escala mayor, ahora visualmente más chica frente al ícono ampliado) · click "reiniciar" para repetir</div>
+
+<h2 style="margin-top:24px;">Estado final estático (como se ve en reposo, sin animación)</h2>
+<div class="card">
+  <div class="logo">
+    <svg width="36" height="36" viewBox="0 0 64 64" fill="none" stroke="#1ea7d6" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="20" y1="14" x2="16" y2="6"/>
+      <line x1="44" y1="14" x2="48" y2="6"/>
+      <circle cx="16" cy="6" r="2" fill="#1ea7d6" stroke="none"/>
+      <circle cx="48" cy="6" r="2" fill="#1ea7d6" stroke="none"/>
+      <rect x="10" y="14" width="44" height="30" rx="4"/>
+      <circle cx="25" cy="29" r="3.5" fill="#1ea7d6" stroke="none"/>
+      <circle cx="39" cy="29" r="3.5" fill="#1ea7d6" stroke="none"/>
+    </svg>
+    <span class="wordmark">
+      <span>S</span><span>T</span><span class="stem-accent">E</span><span>M</span>
+    </span>
+  </div>
+</div>
+
+</body>
+</html>
