@@ -34,6 +34,19 @@ _whisper_lock       = threading.Lock()
 _SENTENCE_END       = frozenset(".?!")
 _tts_ya_reproducido = threading.Event()
 
+# ── Cartesia TTS ───────────────────────────────────────────────────────────────
+_CARTESIA_VOICE_ID = "2fc4f1ec-bfd0-46f1-8e6d-d4279eaaf838"
+_CARTESIA_MODEL    = "sonic-3.5"
+try:
+    from cartesia import Cartesia as _CartesiaClient
+    _cartesia_client = (
+        _CartesiaClient(api_key=os.getenv("CARTESIA_API_KEY"))
+        if os.getenv("CARTESIA_API_KEY")
+        else None
+    )
+except ImportError:
+    _cartesia_client = None
+
 VOICE = "es-MX-JorgeNeural"
 
 DEBUG_TEXTO = os.getenv("STEM_DEBUG_TEXTO", "1") == "1"  # default True (modo texto)
@@ -529,16 +542,9 @@ def consultar_gpt(texto: str) -> str:
     return full_text.strip()
 
 
-def hablar_edge(texto: str) -> None:
-    """
-    Sintetiza y reproduce texto con Edge TTS streaming.
-    No-op si consultar_gpt() ya reprodujo el audio en esta vuelta.
-    """
-    if _tts_ya_reproducido.is_set():
-        _tts_ya_reproducido.clear()
-        return
-
-    print(f"{_ts()}[ia] inicio TTS (sintetizando...)")
+def _hablar_edge_original(texto: str) -> None:
+    """Sintetiza y reproduce texto con Edge TTS. Fallback cuando Cartesia no está disponible."""
+    print(f"{_ts()}[ia] inicio TTS Edge (sintetizando...)")
     try:
         audio_bytes = asyncio.run(_tts_bytes_async(texto))
         decoded = miniaudio.decode(
@@ -548,12 +554,58 @@ def hablar_edge(texto: str) -> None:
             sample_rate=24000,
         )
         samples = np.frombuffer(bytes(decoded.samples), dtype=np.int16)
-        print(f"{_ts()}[ia] TTS reproduciendo...")
+        print(f"{_ts()}[ia] TTS Edge reproduciendo...")
         sd.play(samples, decoded.sample_rate)
         sd.wait()
-        print(f"{_ts()}[ia] fin TTS")
+        print(f"{_ts()}[ia] fin TTS Edge")
     except Exception as exc:
-        print(f"{_ts()}[ia] TTS error: {exc}")
+        print(f"{_ts()}[ia] TTS Edge error: {exc}")
+
+
+def _hablar_cartesia(texto: str) -> None:
+    """Sintetiza y reproduce texto con Cartesia (voz Mateo). Fallback a Edge TTS si falla."""
+    print(f"{_ts()}[ia] inicio TTS Cartesia (sintetizando...)")
+    try:
+        audio_bytes = _cartesia_client.tts.bytes(
+            model_id=_CARTESIA_MODEL,
+            transcript=texto,
+            voice={"mode": "id", "id": _CARTESIA_VOICE_ID},
+            language="es",
+            output_format={
+                "container": "wav",
+                "encoding": "pcm_s16le",
+                "sample_rate": 44100,
+            },
+        )
+        decoded = miniaudio.decode(
+            audio_bytes,
+            output_format=miniaudio.SampleFormat.SIGNED16,
+            nchannels=1,
+            sample_rate=44100,
+        )
+        samples = np.frombuffer(bytes(decoded.samples), dtype=np.int16)
+        print(f"{_ts()}[ia] TTS Cartesia reproduciendo...")
+        sd.play(samples, decoded.sample_rate)
+        sd.wait()
+        print(f"{_ts()}[ia] fin TTS Cartesia")
+    except Exception as exc:
+        print(f"{_ts()}[ia] error TTS Cartesia: {exc} — fallback a Edge TTS")
+        _hablar_edge_original(texto)
+
+
+def hablar_edge(texto: str) -> None:
+    """
+    Punto de entrada TTS principal. Usa Cartesia (Mateo) si CARTESIA_API_KEY está en .env,
+    Edge TTS (Jorge) como fallback. No-op si el audio ya fue reproducido en este turno.
+    """
+    if _tts_ya_reproducido.is_set():
+        _tts_ya_reproducido.clear()
+        return
+
+    if _cartesia_client is not None:
+        _hablar_cartesia(texto)
+    else:
+        _hablar_edge_original(texto)
 
 
 # ── Modo agente ────────────────────────────────────────────────────────────────
