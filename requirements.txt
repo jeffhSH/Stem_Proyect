@@ -1,3 +1,4 @@
 vosk
 sounddevice
 watchdog
+keyboard

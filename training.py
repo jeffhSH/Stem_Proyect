@@ -10,15 +10,22 @@ from pynput import keyboard as _kb
 from comandos import VARIANTES, _VARIANTES_PLANO
 from macros import VARIANTES_MEDIOS, USER_MACROS_PATH
 
-USER_VARIANTS_PATH = Path(__file__).parent / "user_variants.json"
+USER_VARIANTS_PATH  = Path(__file__).parent / "user_variants.json"
+USER_WAKEWORDS_PATH = Path(__file__).parent / "user_wakewords.json"
 _CHUNK = 4000   # igual que voz.CHUNK
 
 
 def iniciar() -> None:
     """Muestra el menú de entrenamiento y graba variantes para el comando elegido."""
+    import voz  # noqa: PLC0415
     cmds        = list(VARIANTES.keys())
     cmds_medios = list(VARIANTES_MEDIOS.keys())
     n_cmd = len(cmds)
+    _WW_CATS = [
+        ("wake_ia",  "Wake IA  (stem)",    voz.WAKE_WORD_IA),
+        ("wake_cmd", "Wake CMD (comando)", voz.WAKE_WORDS_COMANDOS),
+    ]
+    n_wake = len(_WW_CATS)
 
     print("\n" + "═" * 56)
     print("  MODO ENTRENAMIENTO — Stem")
@@ -36,6 +43,13 @@ def iniciar() -> None:
             variantes_str = variantes_str[:39] + "..."
         print(f"  {i:3}. {cmd:<26} {variantes_str}")
     print()
+    print("  --- WAKE WORDS ---")
+    for i, (_, label, ww_list) in enumerate(_WW_CATS, n_cmd + len(cmds_medios) + 1):
+        ww_str = ", ".join(sorted(ww_list))
+        if len(ww_str) > 42:
+            ww_str = ww_str[:39] + "..."
+        print(f"  {i:3}. {label:<26} {ww_str}")
+    print()
 
     try:
         sel = input("Número de comando (0 para cancelar): ").strip()
@@ -48,12 +62,20 @@ def iniciar() -> None:
         return
 
     idx = int(sel) - 1
-    if not (0 <= idx < n_cmd + len(cmds_medios)):
+    if not (0 <= idx < n_cmd + len(cmds_medios) + n_wake):
         print("Número fuera de rango.")
         return
 
-    es_macro = idx >= n_cmd
-    if es_macro:
+    es_wakeword = idx >= n_cmd + len(cmds_medios)
+    es_macro    = not es_wakeword and idx >= n_cmd
+
+    ww_cat: str = ""
+    if es_wakeword:
+        ww_idx             = idx - n_cmd - len(cmds_medios)
+        ww_cat, _, ww_list = _WW_CATS[ww_idx]
+        cmd                = ww_cat
+        variantes_actuales = set(ww_list)
+    elif es_macro:
         cmd                = cmds_medios[idx - n_cmd]
         variantes_actuales = VARIANTES_MEDIOS[cmd]
     else:
@@ -71,10 +93,12 @@ def iniciar() -> None:
         return
 
     if accion == "e":
-        _eliminar_variante_de(cmd, es_macro, variantes_actuales)
+        if es_wakeword:
+            _eliminar_wakeword(ww_cat, variantes_actuales)
+        else:
+            _eliminar_variante_de(cmd, es_macro, variantes_actuales)
         return
 
-    import voz
     model = voz._modelo_activo
     if model is None:
         print("[entrenamiento] modelo Vosk no disponible todavía")
@@ -165,7 +189,14 @@ def iniciar() -> None:
         print(f"[entrenamiento] error de audio: {e}")
 
     if nuevas:
-        if es_macro:
+        if es_wakeword:
+            _persistir_wakeword(ww_cat, nuevas)
+            if ww_cat == "wake_ia":
+                voz.WAKE_WORD_IA.extend(w for w in nuevas if w not in voz.WAKE_WORD_IA)
+                voz.WAKE_WORDS.extend(w for w in nuevas if w not in voz.WAKE_WORDS)
+            else:
+                voz.WAKE_WORDS_COMANDOS.extend(w for w in nuevas if w not in voz.WAKE_WORDS_COMANDOS)
+        elif es_macro:
             _persistir_macro(cmd, nuevas)
             VARIANTES_MEDIOS[cmd].update(nuevas)
         else:
@@ -293,3 +324,107 @@ def _persistir(cmd: str, variantes: set[str]) -> None:
         json.dumps(datos, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def _persistir_wakeword(cat: str, variantes: set[str]) -> None:
+    """Añade `variantes` a la categoría `cat` en user_wakewords.json."""
+    datos: dict[str, list[str]] = {}
+    if USER_WAKEWORDS_PATH.exists():
+        try:
+            datos = json.loads(USER_WAKEWORDS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    existentes = set(datos.get(cat, []))
+    existentes.update(variantes)
+    datos[cat] = sorted(existentes)
+
+    USER_WAKEWORDS_PATH.write_text(
+        json.dumps(datos, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _eliminar_wakeword(cat: str, variantes_actuales: set) -> None:
+    """Flujo para eliminar una variante de usuario de wake words."""
+    import voz  # noqa: PLC0415
+
+    variantes_usuario: set[str] = set()
+    if USER_WAKEWORDS_PATH.exists():
+        try:
+            datos = json.loads(USER_WAKEWORDS_PATH.read_text(encoding="utf-8"))
+            variantes_usuario = set(datos.get(cat, []))
+        except Exception:
+            pass
+
+    variantes_lista = sorted(variantes_actuales)
+    print(f"\n  Wake words ({cat}):")
+    for i, v in enumerate(variantes_lista, 1):
+        if v in variantes_usuario:
+            print(f"  {i:3}. {v}")
+        else:
+            print(f"  {i:3}. {v}  (base — no eliminable)")
+    print()
+
+    try:
+        sel2 = input("Número a eliminar (0 para cancelar): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\nCancelado.")
+        return
+
+    if not sel2.isdigit() or int(sel2) == 0:
+        print("Cancelado.")
+        return
+
+    idx2 = int(sel2) - 1
+    if not (0 <= idx2 < len(variantes_lista)):
+        print("Número fuera de rango.")
+        return
+
+    variante = variantes_lista[idx2]
+    if variante not in variantes_usuario:
+        print(f"  '{variante}' es una variante base — no se puede eliminar.")
+        return
+
+    try:
+        conf = input(f"  ¿Eliminar '{variante}' de wake/{cat}? (s/n): ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("\nCancelado.")
+        return
+
+    if conf != "s":
+        print("Cancelado.")
+        return
+
+    if cat == "wake_ia":
+        try:
+            voz.WAKE_WORD_IA.remove(variante)
+        except ValueError:
+            pass
+        try:
+            voz.WAKE_WORDS.remove(variante)
+        except ValueError:
+            pass
+    else:
+        try:
+            voz.WAKE_WORDS_COMANDOS.remove(variante)
+        except ValueError:
+            pass
+
+    datos: dict[str, list[str]] = {}
+    if USER_WAKEWORDS_PATH.exists():
+        try:
+            datos = json.loads(USER_WAKEWORDS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    if cat in datos:
+        datos[cat] = [v for v in datos[cat] if v != variante]
+        if not datos[cat]:
+            del datos[cat]
+        USER_WAKEWORDS_PATH.write_text(
+            json.dumps(datos, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    print(f"\n  Wake word '{variante}' eliminada de '{cat}'.")
+    print("═" * 56 + "\n")

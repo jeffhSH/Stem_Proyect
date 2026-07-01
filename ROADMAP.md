@@ -56,6 +56,7 @@ Edge TTS (responde por voz, streaming por oraciones)
 - Indicador visual (overlay/notificación) de Stem activo durante procesamiento IA
 - Protección contra alucinaciones/falsos positivos de GPT en el tool loop
 - Pre-cargar modelo Whisper al arranque (eliminar carga en frío ~8s primera vez)
+- Optimizar humanización del plan del Orchestrator: la implementación actual hace una llamada extra a GPT-4o-mini para convertir la lista de pasos en lenguaje natural, lo que agrega latencia perceptible antes de que Stem hable el plan. Evaluar alternativas: plantillas locales con f-strings (sin llamada a GPT), o mover la humanización a una llamada en paralelo mientras se inicializa el Orchestrator. Objetivo: que el plan humanizado esté listo para hablar sin delay adicional respecto al flujo anterior.
 
 ---
 

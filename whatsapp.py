@@ -2,10 +2,12 @@ import json
 import socket
 import subprocess
 import time
+import unicodedata
 import urllib.parse
 from pathlib import Path
 
 import pyautogui
+from rapidfuzz import process as _fuzz_process
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -24,12 +26,26 @@ DEBUG_PORT      = 9222
 _driver = None
 
 
+def _norm(s: str) -> str:
+    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower()
+
+
 def _buscar_numero(contacto: str, contactos: dict) -> str | None:
-    norm = {k.lower(): v for k, v in contactos.items()}
-    clave = contacto.lower()
-    if clave in norm:
-        return norm[clave]
-    return next((v for k, v in norm.items() if k in clave or clave in k), None)
+    norm_map = {_norm(k): v for k, v in contactos.items()}
+    clave = _norm(contacto)
+
+    if clave in norm_map:
+        return norm_map[clave]
+
+    result = _fuzz_process.extractOne(clave, norm_map.keys(), score_cutoff=72)
+    if result:
+        return norm_map[result[0]]
+
+    mejor = _fuzz_process.extractOne(clave, norm_map.keys())
+    score = f"{mejor[1]:.0f}" if mejor else "—"
+    candidato = mejor[0] if mejor else "ninguno"
+    print(f"[wa] contacto '{contacto}' no encontrado (mejor match: '{candidato}' con {score}%)")
+    return None
 
 
 def _puerto_activo() -> bool:
@@ -160,26 +176,13 @@ def enviar_whatsapp(envios: list[dict]) -> bool:
     return len(fallidos) == 0
 
 
-def enviar_archivo_whatsapp(contacto: str, ruta_archivo: str) -> bool:
-    try:
-        contactos = json.loads(CONTACTOS_PATH.read_text(encoding="utf-8"))
-    except Exception as e:
-        print(f"[wa] error leyendo contactos.json: {e}")
-        return False
-
-    numero = _buscar_numero(contacto, contactos)
-    if not numero:
-        print(f"[wa] contacto '{contacto}' no encontrado")
-        return False
-
+def _enviar_archivo_uno(contacto: str, numero: str, ruta_archivo: str, driver) -> bool:
     ruta = Path(ruta_archivo).resolve()
     if not ruta.exists():
         print(f"[wa] archivo no encontrado: {ruta_archivo}")
         return False
 
     try:
-        driver = _get_driver()
-
         if "web.whatsapp.com" not in driver.current_url:
             print(f"[wa] abriendo chat de '{contacto}'...")
             driver.get(f"https://web.whatsapp.com/send?phone={numero}")
@@ -255,5 +258,37 @@ def enviar_archivo_whatsapp(contacto: str, ruta_archivo: str) -> bool:
         return True
 
     except Exception as e:
-        print(f"[wa] error enviando archivo: {e}")
+        print(f"[wa] error enviando archivo a '{contacto}': {e}")
         return False
+
+
+def enviar_archivo_whatsapp(envios: list[dict]) -> bool:
+    """envios: [{contacto, archivo}, ...] — un par por envío exacto"""
+    try:
+        contactos = json.loads(CONTACTOS_PATH.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"[wa] error leyendo contactos.json: {e}")
+        return False
+
+    try:
+        driver = _get_driver()
+    except Exception as e:
+        print(f"[wa] error iniciando driver: {e}")
+        return False
+
+    fallidos = []
+    for item in envios:
+        contacto     = item.get("contacto", "")
+        ruta_archivo = item.get("archivo", "")
+        numero = _buscar_numero(contacto, contactos)
+        if not numero:
+            print(f"[wa] contacto '{contacto}' no encontrado")
+            fallidos.append(contacto)
+            continue
+        ok = _enviar_archivo_uno(contacto, numero, ruta_archivo, driver)
+        if not ok:
+            fallidos.append(f"{contacto}:{ruta_archivo}")
+
+    if fallidos:
+        print(f"[wa] archivos con error — fallidos: {fallidos}")
+    return len(fallidos) == 0

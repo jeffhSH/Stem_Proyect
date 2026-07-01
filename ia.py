@@ -3,6 +3,7 @@ import base64
 import io
 import json
 import os
+import re
 import queue as _stdlib_queue
 import subprocess
 import threading
@@ -35,7 +36,14 @@ _tts_ya_reproducido = threading.Event()
 
 VOICE = "es-MX-JorgeNeural"
 
-DEBUG_TEXTO = os.getenv("STEM_DEBUG_TEXTO", "0") == "1"
+DEBUG_TEXTO = os.getenv("STEM_DEBUG_TEXTO", "1") == "1"  # default True (modo texto)
+
+
+def toggle_modo_entrada() -> None:
+    global DEBUG_TEXTO
+    DEBUG_TEXTO = not DEBUG_TEXTO
+    modo = "TEXTO (debug)" if DEBUG_TEXTO else "VOZ"
+    print(f"[stem] modo de entrada → {modo}")
 _cancelar   = threading.Event()
 
 _MAX_INTENTOS_AGENTE = 3
@@ -51,15 +59,87 @@ _TOOLS_SYSTEM = (
     "Cuando uses rutas de archivos en el código, usa siempre las rutas exactas "
     "que te devolvió explorar_carpeta. Usa barras dobles \\\\ o r-strings r'...' "
     "para rutas de Windows. "
-    "Usa enviar_archivo_whatsapp para enviar archivos por WhatsApp, siempre "
-    "después de explorar_carpeta para obtener la ruta exacta. "
-    "Cuando el usuario quiera enviar mensajes por WhatsApp (iguales o distintos "
-    "por contacto), arma un item en 'envios' por cada destinatario y llama "
-    "enviar_whatsapp una sola vez. "
+    "Para envíos por WhatsApp, hacé una sola llamada a la tool correspondiente por petición. "
+    "REGLA ANTI-COMBINACIONES: en enviar_archivo_whatsapp, cada item de 'envios' representa "
+    "UN ÚNICO par (contacto, archivo) explícitamente pedido por el usuario. "
+    "La cantidad de items debe ser IGUAL a la cantidad de asignaciones explícitas pedidas. "
+    "Ejemplo CORRECTO: si el usuario dice 'envíale A.txt a Juan y B.csv a María', generá "
+    "EXACTAMENTE [{contacto: Juan, archivo: A.txt}, {contacto: María, archivo: B.csv}]. "
+    "NUNCA generes {contacto: Juan, archivo: B.csv} ni {contacto: María, archivo: A.txt} — "
+    "eso no fue pedido. "
+    "Si el usuario dice 'mándale A.txt y B.csv a Diana', SÍ generá dos items para Diana: "
+    "[{contacto: Diana, archivo: A.txt}, {contacto: Diana, archivo: B.csv}] — "
+    "eso SÍ fue pedido explícitamente. "
+    "REGLA DE DEPENDENCIAS: antes de ejecutar una acción verificá si depende "
+    "de otra aún no realizada (enviar depende de haber creado, leer depende de "
+    "haber descomprimido). Si hay dependencia pendiente, resuélvela primero. "
+    "REGLA DE TAREAS MÚLTIPLES: si el usuario pidió varias acciones, completar "
+    "una (envío, creación, búsqueda, o cualquier otra tool) NO es señal de "
+    "cierre — identificá TODAS las acciones pedidas y ejecutalas antes de "
+    "responder_en_voz. Si el pedido era una sola acción, terminá al completarla. "
+    "MODO CONVERSACIÓN: cuando el plan es solo responder_en_voz (sin acciones "
+    "pendientes), sé proactivo, cálido y con iniciativa — mostrá interés genuino, "
+    "hacé preguntas de seguimiento naturales y mantenné la conversación viva. No "
+    "des respuestas cortas y neutras — eso suena a contestador automático. Si el "
+    "usuario dice 'q tal' o 'cómo vas', respondé con energía y preguntá algo de "
+    "vuelta. Si el usuario menciona una tarea concreta (crear, enviar, buscar algo), "
+    "cambiá de modo naturalmente declarando un plan con acciones reales. "
+    "CIERRE DE SESIÓN: cuando el usuario se despida ('chau', 'hasta luego', "
+    "'gracias eso era todo', 'nos vemos', etc.), respondé con una despedida breve "
+    "y natural usando responder_en_voz con cerrar_sesion=true. Nunca cierres "
+    "abruptamente sin contestar. "
     "Siempre usa una tool, nunca respondas texto directo."
 )
 
 _TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "declarar_plan",
+            "description": (
+                "SIEMPRE llama esta tool PRIMERO, antes de cualquier otra acción. "
+                "Declara el plan completo de acciones que vas a ejecutar para cumplir "
+                "la petición del usuario. No ejecutes nada todavía — solo declara el plan "
+                "para que el usuario lo confirme."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pasos": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "paso": {
+                                    "type": "integer",
+                                    "description": "Número de paso, empezando en 1",
+                                },
+                                "accion": {
+                                    "type": "string",
+                                    "description": (
+                                        "Nombre de la tool que se usará: "
+                                        "ejecutar_accion / enviar_whatsapp / "
+                                        "enviar_archivo_whatsapp / buscar_y_abrir_youtube / "
+                                        "explorar_carpeta / responder_en_voz"
+                                    ),
+                                },
+                                "descripcion": {
+                                    "type": "string",
+                                    "description": (
+                                        "Descripción breve en español de qué hace este paso "
+                                        "(ej: 'Crear ensayo_luna.txt en Documentos', "
+                                        "'Enviar ensayo_luna.txt a mamá por WhatsApp')"
+                                    ),
+                                },
+                            },
+                            "required": ["paso", "accion", "descripcion"],
+                        },
+                    },
+                },
+                "required": ["pasos"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -71,7 +151,11 @@ _TOOLS = [
                     "texto": {
                         "type": "string",
                         "description": "Respuesta en español, máximo 2 oraciones.",
-                    }
+                    },
+                    "cerrar_sesion": {
+                        "type": "boolean",
+                        "description": "true solo cuando el usuario se despide y la sesión debe cerrarse.",
+                    },
                 },
                 "required": ["texto"],
             },
@@ -81,7 +165,13 @@ _TOOLS = [
         "type": "function",
         "function": {
             "name": "ejecutar_accion",
-            "description": "Ejecuta una acción en el PC del usuario vía Python.",
+            "description": (
+                "Ejecuta una acción en el PC del usuario vía Python. "
+                "Si el usuario no especifica formato de archivo ni destino, elegí el más natural "
+                "para el contenido (texto/ensayo → .txt, tabla/datos → .csv) y mencionalo "
+                "explícitamente en la descripción del paso del plan para que el usuario pueda "
+                "corregirlo antes de confirmar."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -175,20 +265,38 @@ _TOOLS = [
         "type": "function",
         "function": {
             "name": "enviar_archivo_whatsapp",
-            "description": "Envía un archivo (documento, imagen, video, etc) por WhatsApp a un contacto. SIEMPRE usa explorar_carpeta primero para obtener la ruta absoluta exacta del archivo antes de llamar esta tool.",
+            "description": (
+                "Envía archivos por WhatsApp. Un ítem por par exacto (contacto, archivo). "
+                "SIEMPRE usa explorar_carpeta primero para obtener rutas absolutas. "
+                "Cada item representa UNA asignación explícita del usuario: un archivo para un contacto. "
+                "Si el usuario dijo 'A para Juan y B para María': "
+                "[{contacto: Juan, archivo: A}, {contacto: María, archivo: B}] — 2 items, no 4. "
+                "Si el usuario dijo 'A y B para Diana': "
+                "[{contacto: Diana, archivo: A}, {contacto: Diana, archivo: B}] — 2 items, correcto."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "contacto": {
-                        "type": "string",
-                        "description": "Nombre del contacto tal como aparece en la agenda.",
-                    },
-                    "ruta_archivo": {
-                        "type": "string",
-                        "description": "Ruta absoluta exacta del archivo, obtenida de explorar_carpeta. Nunca inventar la ruta.",
+                    "envios": {
+                        "type": "array",
+                        "description": "Lista de pares exactos (contacto, archivo). Un item por envío explícito.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "contacto": {
+                                    "type": "string",
+                                    "description": "Nombre del contacto tal como aparece en la agenda.",
+                                },
+                                "archivo": {
+                                    "type": "string",
+                                    "description": "Ruta absoluta exacta del archivo, obtenida de explorar_carpeta.",
+                                },
+                            },
+                            "required": ["contacto", "archivo"],
+                        },
                     },
                 },
-                "required": ["contacto", "ruta_archivo"],
+                "required": ["envios"],
             },
         },
     },
@@ -751,45 +859,393 @@ def _ejecutar_con_verificacion(
             return False
 
 
-def decidir_y_actuar(texto: str, audio_q: _stdlib_queue.Queue, rec: object) -> str:
-    """
-    Loop multi-turn con GPT-4o-mini (máx 4 rondas).
-    - explorar_carpeta devuelve resultado a GPT y continúa
-    - responder_en_voz / ejecutar_accion / buscar_y_abrir_youtube finalizan
-    Retorna 'conversacion' o 'accion' para que el caller decida si ofrece followup.
-    """
+def _ejecutar_silencioso(
+    descripcion: str,
+    codigo: str,
+    youtube_query: str | None = None,
+) -> bool:
+    """Ejecuta sin pedir confirmación por acción (el Orchestrator ya la obtuvo al inicio)."""
     if _cancelado():
-        return "conversacion"
+        return False
 
+    if youtube_query:
+        url = _buscar_youtube(youtube_query)
+        brave = r'C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe'
+        if url:
+            print(f"{_ts()}[youtube] abriendo: {url}")
+            subprocess.Popen([brave, url])
+        else:
+            import urllib.parse  # noqa: PLC0415
+            fallback = f"https://www.youtube.com/results?search_query={urllib.parse.quote(youtube_query)}"
+            subprocess.Popen([brave, fallback])
+            _reproducir_oracion("No encontré el video exacto, abriendo búsqueda.")
+        return True
+
+    print(f"{_ts()}[agente] ejecutando: {codigo}")
     try:
-        import winreg
+        exec(codigo, _build_exec_ns())  # noqa: S102
+        return True
+    except NameError as exc:
+        print(f"{_ts()}[agente] GPT intentó usar un helper inexistente: {exc}")
+        _log_exec_error(exc)
+        _reproducir_oracion("Hubo un error al ejecutar.")
+        return False
+    except Exception as exc:
+        print(f"{_ts()}[agente] exec error: {exc}")
+        _log_exec_error(exc)
+        _reproducir_oracion("Hubo un error al ejecutar.")
+        return False
+
+
+MAX_BLOQUEOS_GATEKEEPER = 2
+
+
+def _quedan_pendientes(peticion_original: str, messages: list) -> bool:
+    """Pregunta a GPT si la petición original quedó completamente satisfecha.
+    Devuelve True si falta algo. Falla de forma segura (False en cualquier excepción)."""
+    try:
+        check_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Eres un verificador estricto. El usuario hizo esta petición:\n"
+                    f"'{peticion_original}'\n\n"
+                    "Basándote ÚNICAMENTE en las acciones ya ejecutadas en el historial, "
+                    "¿quedó la petición COMPLETAMENTE satisfecha? "
+                    "Responde SOLO 'SÍ' o 'NO'."
+                ),
+            }
+        ] + [m for m in messages if isinstance(m, dict) and m.get("role") != "system"]
+        resp = _client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=check_messages,
+            max_tokens=5,
+            temperature=0,
+        )
+        answer = resp.choices[0].message.content.strip().upper()
+        return answer.startswith("NO")
+    except Exception:
+        return False
+
+
+TOOLS_CONVERSACIONALES: frozenset[str] = frozenset({"responder_en_voz"})
+
+_PALABRAS_SI = {"sí", "si", "dale", "ok", "procede", "adelante", "perfecto", "correcto", "listo", "va", "claro"}
+_PALABRAS_NO = {"no", "cancela", "cancelar", "para", "detén", "detente", "stop", "olvídalo", "olvida"}
+
+
+def _requiere_confirmacion(plan: list[dict]) -> bool:
+    """Devuelve False si todos los pasos son solo conversacionales (no necesitan confirmación)."""
+    return not all(p.get("accion") in TOOLS_CONVERSACIONALES for p in plan)
+
+
+def _normalizar_respuesta(texto: str) -> str:
+    """NFKD + elimina puntuación + lowercase. Permite comparar sin acentos ni signos."""
+    import unicodedata
+    sin_acentos = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode()
+    return re.sub(r"[^\w\s]", "", sin_acentos).lower().strip()
+
+
+def _es_confirmacion(texto: str) -> bool:
+    palabras = set(_normalizar_respuesta(texto).split())
+    return bool(palabras & _PALABRAS_SI) and not bool(palabras & _PALABRAS_NO)
+
+
+def _es_cancelacion(texto: str) -> bool:
+    palabras = set(_normalizar_respuesta(texto).split())
+    return bool(palabras & _PALABRAS_NO)
+
+
+def _transcribir_respuesta(audio_q: _stdlib_queue.Queue, rec: object) -> str:
+    """Captura audio libre y lo transcribe con Whisper. Devuelve texto vacío en silencio/error."""
+    _drenar_audio(audio_q)
+    audio_bytes = _capturar_audio(audio_q, rec, timeout=8.0)
+    if not audio_bytes:
+        return ""
+    try:
+        return transcribir_whisper(audio_bytes)
+    except Exception:
+        return ""
+
+
+def _replannear(peticion_actualizada: str) -> list[dict]:
+    """Genera un plan revisado con GPT a partir de petición original + corrección del usuario."""
+    try:
+        resp = _client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Eres Stem. El usuario quiere modificar el plan de acciones. "
+                        "Genera un plan revisado en formato JSON con esta estructura exacta: "
+                        '[{"paso": 1, "accion": "nombre_tool", "descripcion": "descripción breve en español"}, ...]. '
+                        "Las tools disponibles son: ejecutar_accion, enviar_whatsapp, "
+                        "enviar_archivo_whatsapp, buscar_y_abrir_youtube, explorar_carpeta, responder_en_voz. "
+                        "Respondé SOLO con el JSON, sin texto extra ni backticks."
+                    ),
+                },
+                {"role": "user", "content": peticion_actualizada},
+            ],
+            max_tokens=300,
+            temperature=0,
+        )
+        raw = resp.choices[0].message.content.strip()
+        # quitar posibles backticks de markdown si GPT los incluye
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        return json.loads(raw)
+    except Exception as exc:
+        print(f"{_ts()}[orchestrator] _replannear error: {exc}")
+        return []
+
+
+def _humanizar_plan(pasos: list[dict]) -> str:
+    """Convierte la lista de pasos del plan en una frase natural en español vía GPT.
+    Fallback: lista numerada clásica si GPT falla."""
+    fallback_lineas = [f"{p.get('paso', i+1)}. {p.get('descripcion', '')}" for i, p in enumerate(pasos)]
+    fallback = "Haré lo siguiente: " + ", ".join(fallback_lineas) + ". ¿Procedo?"
+    try:
+        pasos_texto = "\n".join(
+            f"{p.get('paso', i+1)}. [{p.get('accion', '')}] {p.get('descripcion', '')}"
+            for i, p in enumerate(pasos)
+        )
+        resp = _client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Eres Stem, un asistente de voz personal. El usuario acaba de hacer una petición "
+                        "y vas a ejecutar un plan de acciones. Convierte la siguiente lista de pasos técnicos "
+                        "en UNA sola frase natural en español, en primera persona, que explique lo que vas a "
+                        "hacer de forma conversacional y fluida — como si se lo explicaras a un amigo, no como "
+                        "si leyeras un menú. No uses números, no uses corchetes, no menciones nombres técnicos "
+                        "de herramientas (ejecutar_accion, enviar_whatsapp, etc.). Si hay varios pasos similares, "
+                        "agrúpalos naturalmente. Termina siempre con '¿Procedo?'. Máximo 2-3 oraciones."
+                    ),
+                },
+                {"role": "user", "content": pasos_texto},
+            ],
+            max_tokens=120,
+            temperature=0.4,
+        )
+        resultado = resp.choices[0].message.content.strip()
+        if resultado:
+            return resultado
+    except Exception as exc:
+        print(f"{_ts()}[orchestrator] _humanizar_plan error: {exc}")
+    return fallback
+
+
+def _correccion_tiene_sentido(plan_actual: list[dict], correccion: str) -> bool:
+    """Pregunta a GPT (max_tokens=5) si la corrección del usuario tiene sentido para ajustar el plan."""
+    try:
+        pasos_txt = "; ".join(
+            f"{p.get('paso', i+1)}. {p.get('descripcion', '')}"
+            for i, p in enumerate(plan_actual)
+        )
+        resp = _client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Eres un validador. El usuario tiene este plan: "
+                        f"[{pasos_txt}]. "
+                        "¿La corrección del usuario tiene sentido como modificación al plan? "
+                        "Responde SOLO 'SÍ' o 'NO'."
+                    ),
+                },
+                {"role": "user", "content": correccion},
+            ],
+            max_tokens=5,
+            temperature=0,
+        )
+        answer = resp.choices[0].message.content.strip().upper()
+        return answer.startswith("SÍ") or answer.startswith("SI")
+    except Exception:
+        return True  # en caso de error, asumir que tiene sentido y dejar pasar
+
+
+class Orchestrator:
+    def __init__(self, plan: list[dict], peticion_original: str) -> None:
+        self.plan = plan
+        self.peticion_original = peticion_original
+        self.paso_actual = 0
+        self.desviaciones: list[str] = []
+
+    def confirmar_con_usuario(self, audio_q: _stdlib_queue.Queue, rec: object) -> bool:
+        # BUG 1 — si el plan es solo conversacional, no hace falta confirmar
+        if not _requiere_confirmacion(self.plan):
+            return True
+
+        MAX_REFINAMIENTOS = 3
+        plan_context = self.peticion_original
+        silencios_consecutivos = 0   # BUG 4
+        confusiones_seguidas = 0     # MEJORA 6
+
+        for intento in range(MAX_REFINAMIENTOS):
+            if _cancelado():
+                return False
+
+            resumen = _humanizar_plan(self.plan)
+            _reproducir_oracion(resumen)
+
+            if _cancelado():
+                return False
+
+            if DEBUG_TEXTO:
+                respuesta_texto = input("[DEBUG] respuesta (sí / no / corrección): ").strip()
+            else:
+                respuesta_texto = _transcribir_respuesta(audio_q, rec)
+
+            print(f"{_ts()}[orchestrator] respuesta intento {intento + 1}: '{respuesta_texto}'")
+
+            # BUG 4 — silencios consecutivos
+            if not respuesta_texto:
+                silencios_consecutivos += 1
+                if silencios_consecutivos >= 2:
+                    _reproducir_oracion("Cuando quieras me decís si procedo o si querés cambiar algo.")
+                else:
+                    _reproducir_oracion("No te escuché bien, ¿procedo o cambiás algo?")
+                continue
+            silencios_consecutivos = 0  # reset al recibir respuesta
+
+            if _es_confirmacion(respuesta_texto):
+                return True
+
+            if _es_cancelacion(respuesta_texto):
+                _reproducir_oracion("Entendido, cancelado.")
+                return False
+
+            # Corrección en lenguaje natural — BUG 3: validar antes de replannear
+            print(f"{_ts()}[orchestrator] corrección recibida: '{respuesta_texto}'")
+            if not _correccion_tiene_sentido(self.plan, respuesta_texto):
+                confusiones_seguidas += 1
+                print(f"{_ts()}[orchestrator] corrección no reconocida (confusión #{confusiones_seguidas})")
+                # MEJORA 6 — escalar mensaje según confusiones acumuladas
+                if confusiones_seguidas >= 3:
+                    _reproducir_oracion("Está bien, avísame cuando quieras que lo haga.")
+                    return False
+                if confusiones_seguidas >= 2:
+                    _reproducir_oracion(
+                        "No estoy entendiendo bien qué querés cambiar. "
+                        "Podés decirme de nuevo con otras palabras, o decime 'cancela' para empezar de nuevo."
+                    )
+                else:
+                    _reproducir_oracion("Perdona, no entendí bien. ¿Querés que proceda con el plan o cambiás algo?")
+                continue
+            confusiones_seguidas = 0  # reset si la corrección tiene sentido
+
+            plan_context = f"{plan_context}. Corrección del usuario: {respuesta_texto}"
+            nuevo_plan = _replannear(plan_context)
+            if nuevo_plan:
+                self.plan = nuevo_plan
+                print(f"{_ts()}[orchestrator] plan revisado: {len(self.plan)} paso(s)")
+                for p in self.plan:
+                    print(f"  {p.get('paso', '?')}. [{p.get('accion', '')}] {p.get('descripcion', '')}")
+            else:
+                _reproducir_oracion("No pude ajustar el plan, ¿procedemos con el original?")
+
+        # MEJORA 5 — mensaje natural al agotar intentos
+        _reproducir_oracion("Está bien, avísame cuando quieras que lo haga.")
+        return False
+
+    def autorizar(self, tool_name: str, descripcion_corta: str) -> bool:
+        # explorar_carpeta es un paso de soporte transparente — nunca cuenta como desviación
+        if tool_name == "explorar_carpeta":
+            return True
+
+        if self.paso_actual >= len(self.plan):
+            self._registrar_desviacion(
+                f"paso extra no declarado: {tool_name} — {descripcion_corta}"
+            )
+            self.paso_actual += 1
+            return True  # permisivo en v1
+
+        paso_esperado = self.plan[self.paso_actual]
+        if tool_name != paso_esperado["accion"]:
+            self._registrar_desviacion(
+                f"paso {self.paso_actual + 1}: esperaba '{paso_esperado['accion']}' "
+                f"pero GPT llama '{tool_name}' ({descripcion_corta})"
+            )
+        self.paso_actual += 1
+        return True
+
+    def _registrar_desviacion(self, msg: str) -> None:
+        print(f"{_ts()}[orchestrator] ⚠ desviación: {msg}")
+        self.desviaciones.append(msg)
+
+    def reporte_final(self) -> None:
+        completados = self.paso_actual
+        total = len(self.plan)
+        if self.desviaciones:
+            print(
+                f"{_ts()}[orchestrator] plan: {completados}/{total} pasos | "
+                f"{len(self.desviaciones)} desviación(es):"
+            )
+            for d in self.desviaciones:
+                print(f"  - {d}")
+        else:
+            print(
+                f"{_ts()}[orchestrator] plan completado sin desviaciones "
+                f"({completados}/{total} pasos)"
+            )
+
+
+def _get_rutas_contexto() -> str:
+    """Resuelve rutas reales del usuario via Registry (OneDrive-safe)."""
+    try:
+        import winreg  # noqa: PLC0415
         _key = winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
             r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
         )
-        _descargas = winreg.QueryValueEx(_key, "{374DE290-123F-4565-9164-39C4925E467B}")[0]
-        _documentos = winreg.QueryValueEx(_key, "Personal")[0]
+        descargas = winreg.QueryValueEx(_key, "{374DE290-123F-4565-9164-39C4925E467B}")[0]
+        documentos = winreg.QueryValueEx(_key, "Personal")[0]
     except Exception:
-        _descargas  = os.path.join(os.path.expanduser("~"), "Downloads")
-        _documentos = os.path.join(os.path.expanduser("~"), "Documents")
-
-    rutas_contexto = (
+        descargas = os.path.join(os.path.expanduser("~"), "Downloads")
+        documentos = os.path.join(os.path.expanduser("~"), "Documents")
+    return (
         f"Rutas reales del sistema:\n"
         f"- Escritorio: {_get_escritorio()}\n"
-        f"- Descargas: {_descargas}\n"
-        f"- Documentos: {_documentos}\n"
+        f"- Descargas: {descargas}\n"
+        f"- Documentos: {documentos}\n"
         "Usa SIEMPRE estas rutas exactas como destino, nunca las inventes."
     )
 
-    messages: list = [
-        {"role": "system", "content": f"{_TOOLS_SYSTEM}\n\n{rutas_contexto}"},
-        {"role": "user",   "content": texto},
-    ]
 
-    MAX_RONDAS = 6
+def _capturar_y_transcribir(audio_q: _stdlib_queue.Queue, rec: object) -> str:
+    """Captura audio y transcribe con Faster-Whisper. Devuelve '' en silencio/error."""
+    from voz import _capturar_audio_ia  # noqa: PLC0415
+    audio_bytes = _capturar_audio_ia(audio_q, rec)
+    if not audio_bytes:
+        return ""
+    try:
+        return transcribir_whisper(audio_bytes)
+    except Exception:
+        return ""
+
+
+def _ejecutar_turno(
+    messages: list,
+    texto: str,
+    audio_q: _stdlib_queue.Queue,
+    rec: object,
+) -> str:
+    """Loop interno de rondas GPT para un turno de la sesión.
+    Modifica messages in-place. Devuelve 'continuar', 'cerrar' o 'error'."""
+    orchestrator: Orchestrator | None = None
+    _bloqueos_gk = 0
+    _tool_choice: object = {"type": "function", "function": {"name": "declarar_plan"}}
+    MAX_RONDAS = 12
+
     for ronda in range(MAX_RONDAS):
         if _cancelado():
-            return "conversacion"
+            if orchestrator:
+                orchestrator.reporte_final()
+            return "error"
 
         _hud_set_estado("procesando", ronda=ronda + 1, max_rondas=MAX_RONDAS)
         print(f"{_ts()}[ia] GPT-4o-mini ronda {ronda + 1}...")
@@ -798,18 +1254,20 @@ def decidir_y_actuar(texto: str, audio_q: _stdlib_queue.Queue, rec: object) -> s
                 model="gpt-4o-mini",
                 messages=messages,
                 tools=_TOOLS,
-                tool_choice="required",
-                max_tokens=300,
+                tool_choice=_tool_choice,
+                max_tokens=400,
                 parallel_tool_calls=False,
             )
         except Exception as exc:
             print(f"{_ts()}[ia] error GPT: {exc}")
             _hud_set_estado("hablando")
             hablar_edge("Hubo un error al procesar tu solicitud.")
-            return "conversacion"
+            return "error"
 
         if _cancelado():
-            return "conversacion"
+            if orchestrator:
+                orchestrator.reporte_final()
+            return "error"
 
         tool_call = resp.choices[0].message.tool_calls[0]
         tool_name = tool_call.function.name
@@ -818,32 +1276,94 @@ def decidir_y_actuar(texto: str, audio_q: _stdlib_queue.Queue, rec: object) -> s
 
         messages.append(resp.choices[0].message)
 
+        # ── FASE 1: declaración del plan ────────────────────────────────────
+        if tool_name == "declarar_plan":
+            plan = args.get("pasos", [])
+            print(f"{_ts()}[orchestrator] plan recibido: {len(plan)} paso(s)")
+            for p in plan:
+                print(f"  {p.get('paso','?')}. [{p.get('accion','')}] {p.get('descripcion','')}")
+
+            orchestrator = Orchestrator(plan, texto)
+
+            if not orchestrator.confirmar_con_usuario(audio_q, rec):
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": json.dumps({"confirmado": False}, ensure_ascii=False),
+                })
+                _reproducir_oracion("Entendido, cancelado.")
+                return "error"
+
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": json.dumps(
+                    {"confirmado": True, "pasos": len(plan)}, ensure_ascii=False
+                ),
+            })
+            _tool_choice = "required"
+            continue
+
+        # Si GPT saltó declarar_plan (no debería ocurrir), crear orchestrator vacío
+        if orchestrator is None:
+            print(f"{_ts()}[orchestrator] advertencia: GPT saltó declarar_plan")
+            orchestrator = Orchestrator([], texto)
+            _tool_choice = "required"
+
+        # ── FASE 3: ejecución vigilada ──────────────────────────────────────
+        descripcion_corta = args.get("descripcion", tool_name)
+        orchestrator.autorizar(tool_name, descripcion_corta)
+
         if tool_name == "explorar_carpeta":
             carpeta  = args.get("carpeta", "")
             archivos = _listar_carpeta(carpeta)
             print(f"{_ts()}[explorar] {carpeta}: {len(archivos)} archivos")
             messages.append({
-                "role":        "tool",
+                "role":         "tool",
                 "tool_call_id": tool_call.id,
-                "content":     json.dumps(archivos, ensure_ascii=False),
+                "content":      json.dumps(archivos, ensure_ascii=False),
             })
             continue
 
         if tool_name == "responder_en_voz":
             respuesta = args.get("texto", "")
-            print(f"{_ts()}[ia] respuesta: '{respuesta}'")
+            cerrar = bool(args.get("cerrar_sesion", False))
+            if _bloqueos_gk < MAX_BLOQUEOS_GATEKEEPER and _quedan_pendientes(texto, messages):
+                _bloqueos_gk += 1
+                print(
+                    f"{_ts()}[ia] gatekeeper: cierre prematuro detectado "
+                    f"(bloqueo {_bloqueos_gk}/{MAX_BLOQUEOS_GATEKEEPER})"
+                )
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": json.dumps(
+                        {"pendiente": True, "instruccion": "Aún faltan acciones. Completá TODAS las acciones pedidas antes de responder_en_voz."},
+                        ensure_ascii=False,
+                    ),
+                })
+                messages.append({
+                    "role": "user",
+                    "content": "Faltan acciones por completar. Revisá la petición original y ejecutá las que faltan.",
+                })
+                continue
+            orchestrator.reporte_final()
+            print(f"{_ts()}[ia] respuesta: '{respuesta}' | cerrar={cerrar}")
             _hud_set_estado("hablando")
             hablar_edge(respuesta)
-            return "conversacion"
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": json.dumps({"entregado": True}, ensure_ascii=False),
+            })
+            return "cerrar" if cerrar else "continuar"
 
         if tool_name == "ejecutar_accion":
             codigo = args.get("codigo", "").strip()
             print(f"{_ts()}[ia] acción: {codigo}")
-            exito = _ejecutar_con_verificacion(
+            exito = _ejecutar_silencioso(
                 descripcion=args.get("descripcion", "Ejecutando acción"),
                 codigo=codigo,
-                audio_q=audio_q,
-                rec=rec,
             )
             messages.append({
                 "role":         "tool",
@@ -855,14 +1375,17 @@ def decidir_y_actuar(texto: str, audio_q: _stdlib_queue.Queue, rec: object) -> s
         if tool_name == "buscar_y_abrir_youtube":
             query = args.get("query", "")
             print(f"{_ts()}[ia] youtube: '{query}'")
-            _ejecutar_con_verificacion(
+            exito = _ejecutar_silencioso(
                 descripcion=f"Buscando {query} en YouTube",
                 codigo="",
-                audio_q=audio_q,
-                rec=rec,
                 youtube_query=query,
             )
-            return "accion"
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": json.dumps({"exito": exito}, ensure_ascii=False),
+            })
+            continue
 
         if tool_name == "enviar_whatsapp":
             from whatsapp import enviar_whatsapp  # noqa: PLC0415
@@ -873,23 +1396,86 @@ def decidir_y_actuar(texto: str, audio_q: _stdlib_queue.Queue, rec: object) -> s
             if not ok:
                 _hud_set_estado("hablando")
                 hablar_edge("No pude enviar uno o más mensajes.")
-            return "accion"
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": json.dumps({"enviado": ok}, ensure_ascii=False),
+            })
+            continue
 
         if tool_name == "enviar_archivo_whatsapp":
+            from collections import Counter  # noqa: PLC0415
             from whatsapp import enviar_archivo_whatsapp  # noqa: PLC0415
-            contacto     = args.get("contacto", "")
-            ruta_archivo = args.get("ruta_archivo", "")
-            print(f"{_ts()}[ia] whatsapp archivo → {contacto}: {ruta_archivo}")
-            ok = enviar_archivo_whatsapp(contacto, ruta_archivo)
+            envios_arch = args.get("envios", [])
+            _arch_counts = Counter(e.get("archivo", "") for e in envios_arch if e.get("archivo"))
+            for _arch, _cnt in _arch_counts.items():
+                if _cnt > 1:
+                    print(f"{_ts()}[ia] posible over-sending: '{Path(_arch).name}' asignado a {_cnt} contactos")
+            for e in envios_arch:
+                print(f"{_ts()}[ia] whatsapp archivo → {e.get('contacto', '')}: {e.get('archivo', '')}")
+            ok = enviar_archivo_whatsapp(envios_arch)
             if not ok:
                 _hud_set_estado("hablando")
-                hablar_edge("No pude enviar el archivo.")
-            return "accion"
+                hablar_edge("No pude enviar uno o más archivos.")
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": json.dumps({"enviado": ok}, ensure_ascii=False),
+            })
+            continue
 
+    if orchestrator:
+        orchestrator.reporte_final()
     print(f"{_ts()}[ia] agotó rondas sin acción final")
     _hud_set_estado("hablando")
     hablar_edge("No pude completar la acción.")
-    return "conversacion"
+    return "error"
+
+
+def sesion_inteligente(audio_q: _stdlib_queue.Queue, rec: object) -> None:
+    """Sesión conversacional continua: un solo historial acumulado por activación de Stem.
+    GPT recibe el contexto completo en cada turno y decide naturalmente cuándo cerrar."""
+    if _cancelado():
+        return
+
+    messages: list = [
+        {"role": "system", "content": f"{_TOOLS_SYSTEM}\n\n{_get_rutas_contexto()}"},
+    ]
+    MAX_TURNOS = 20
+
+    for turno in range(MAX_TURNOS):
+        if _cancelado():
+            break
+
+        _hud_set_estado("procesando")
+        print(f"{_ts()}[ia] [turno {turno + 1}/{MAX_TURNOS}] esperando input...")
+
+        if DEBUG_TEXTO:
+            print(f"{_ts()}[ia] di tu pregunta (debug)...")
+            try:
+                texto = input("[DEBUG] escribe tu pregunta: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                break
+            if not texto:
+                break
+            _hud_set_tx(texto)
+        else:
+            print(f"{_ts()}[ia] di tu pregunta...")
+            texto = _capturar_y_transcribir(audio_q, rec)
+            if not texto:
+                print(f"{_ts()}[ia] no se detectó texto — cerrando sesión.")
+                break
+            print(f"{_ts()}[ia] oído: '{texto}'")
+            _hud_set_tx(texto)
+
+        messages.append({"role": "user", "content": texto})
+
+        resultado = _ejecutar_turno(messages, texto, audio_q, rec)
+
+        if resultado in ("cerrar", "error"):
+            break
+
+    print(f"{_ts()}[ia] sesión finalizada.")
 
 
 def activar_modo_agente(audio_q: _stdlib_queue.Queue, rec: object) -> None:

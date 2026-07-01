@@ -3,18 +3,12 @@ Ventana HUD de Stem — proceso aparte (subprocess).
 Overlay always-on-top, sin bordes de SO, esquina superior derecha.
 Poll JSON de estado (hud_control) cada 80ms.
 
-Limitación Tkinter: sin blur real ni transparencia por-pixel con texto nítido.
-Se usa -alpha 0.94 (opacidad completa de ventana), no glassmorphism real como
-en stem_hud_final.html. Para glassmorphism real sería necesario migrar a
-PyQt/PySide — la lógica de estados y polling se reutiliza tal cual.
-
-Animación del wordmark: S y M visibles de inmediato; T se inserta a 350ms,
-E a 550ms (portado de stem_logo_animado.html). Implementado con .after()
-escalonado cambiando el color de texto de BG→accent (Tkinter no tiene
-CSS transitions — este es el equivalente más fiel posible).
+Tema: light (rgba(255,255,255,0.68) simulado via -alpha; sin blur real —
+Tkinter no soporta backdrop-filter. Para glassmorphism real migrar a PyQt/PySide).
 """
 import json
 import math
+import random
 import sys
 import tempfile
 import time
@@ -24,58 +18,67 @@ from pathlib import Path
 # ── Estado ──────────────────────────────────────────────────────────────────
 STATE_FILE = Path(tempfile.gettempdir()) / "stem_hud_state.json"
 
-# ── Colores (extraídos de stem_hud_final.html, tema oscuro) ─────────────────
-BG      = "#0d1620"   # fondo ventana
-C_IDLE  = "#7fa3b0"   # --text-dim (gris azulado)
-C_PROC  = "#5fe3ff"   # --cyan
-C_SPEK  = "#5fffb0"   # --green
-C_TEXT  = "#e8f6fb"   # --text
-C_DIM   = "#7fa3b0"   # --text-dim
-C_TX_BG = "#060c14"   # fondo transcript (más oscuro que BG)
+# ── Colores tema light (de stem_hud_final.html .hud.light) ──────────────────
+BG       = "#f0f8fc"    # aproxima rgba(255,255,255,0.68); blur via -alpha
+C_BORDER = "#1ea7d6"    # rgba(30,167,214,0.35) → solid tkinter
+C_IDLE   = "#9aabb0"    # .hud.light.idle .status-dot
+C_PROC   = "#1ea7d6"    # --light-cyan
+C_SPEK   = "#28b482"    # .hud.light.speak .status-dot
+C_TEXT   = "#16313d"    # .hud.light .logo color
+C_DIM    = "#5b7884"    # .hud.light .hud-label color
+C_TX_BG  = "#ffffff"    # .hud.light .hud-transcript background
+C_TX_FG  = "#1c3640"    # .hud.light .hud-transcript color
+C_E      = C_PROC       # E del wordmark siempre cian
 
-# E del wordmark es siempre cian (no cambia entre estados, per HTML reference)
-C_E     = C_PROC
+# ── Fuentes (+20% sobre valores originales) ──────────────────────────────────
+F_MONO   = ("Consolas", 10)          # era 8  → round(8*1.2)=10
+F_MONO11 = ("Consolas", 11)          # era 9  → round(9*1.2)=11
+F_WM     = ("Segoe UI", 11, "bold")  # era 9  → round(9*1.2)=11
 
-# ── Fuentes ──────────────────────────────────────────────────────────────────
-F_MONO  = ("Consolas", 8)
-F_MONO9 = ("Consolas", 9)
-F_WM    = ("Segoe UI", 9, "bold")   # wordmark
+# ── Dimensiones (+20%) ───────────────────────────────────────────────────────
+WIN_W  = 324   # era 270 → 270*1.2=324
+MARGIN = 22    # era 18  → round(18*1.2)=22
 
-# ── Dimensiones ──────────────────────────────────────────────────────────────
-WIN_W   = 270   # ancho fijo de la ventana
-MARGIN  = 18    # px desde los bordes de pantalla
+# ── Animación ────────────────────────────────────────────────────────────────
+POLL_MS           = 80
+TICK_MS           = 16    # ~60fps (era 50ms ~20fps)
+FLOAT_AMP         = 3.0
+FLOAT_PERIOD      = 4.5
+EQ_H_MAX          = 14    # era 12 → round(12*1.2)=14
+EQ_W              = 2
+EQ_GAP            = 2
+EQ_LERP           = 0.12  # factor de interpolación hacia target por tick
+EQ_RETARGET_TICKS = 8     # retargetear cada 8 ticks (~128ms a 16ms/tick)
+EQ_FRAC           = [0.40, 0.90, 0.60, 1.00, 0.50, 0.75]
 
-# ── Constantes de animación ──────────────────────────────────────────────────
-POLL_MS      = 80
-TICK_MS      = 50      # ~20fps para animaciones
-FLOAT_AMP    = 3.0     # px de amplitud
-FLOAT_PERIOD = 4.5     # segundos por ciclo (--float 4.5s en HTML)
-EQ_PERIOD    = 1.0     # segundos por ciclo del ecualizador
-EQ_H_MAX     = 12      # px altura máxima
-EQ_W         = 2       # px ancho de barra
-EQ_GAP       = 2       # px espacio entre barras
-# Fracciones de altura por barra (de .waveform span nth-child heights en HTML)
-EQ_FRAC      = [0.40, 0.90, 0.60, 1.00, 0.50, 0.75]
-# Desfases de fase (animation-delay / period, en fracción de ciclo)
-EQ_PHASE_OFF = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
+WM_T_MS    = 350
+WM_E_MS    = 550
+DOT_SIZE   = 7    # era 6 → round(6*1.2)=7
+BRACKET_SZ = 12   # px, canvas de esquina (decorativo)
 
-# Wordmark animation timing (de stem_logo_animado.html)
-WM_T_MS = 350   # ms → T aparece
-WM_E_MS = 550   # ms → E aparece
 
-DOT_SIZE     = 6   # px diámetro del status dot
-DOT_PULSE_MS = 1.3 # segundos por ciclo de pulso
+def _interpolar_color(c1: str, c2: str, t: float) -> str:
+    """Interpola entre dos colores hex #rrggbb con t ∈ [0.0, 1.0]."""
+    r1, g1, b1 = int(c1[1:3], 16), int(c1[3:5], 16), int(c1[5:7], 16)
+    r2, g2, b2 = int(c2[1:3], 16), int(c2[3:5], 16), int(c2[5:7], 16)
+    r = max(0, min(255, int(r1 + (r2 - r1) * t)))
+    g = max(0, min(255, int(g1 + (g2 - g1) * t)))
+    b = max(0, min(255, int(b1 + (b2 - b1) * t)))
+    return f"#{r:02x}{g:02x}{b:02x}"
 
 
 class HudWindow:
     def __init__(self, root: tk.Tk) -> None:
-        self.root       = root
-        self._t0        = time.monotonic()
-        self._base_y    = MARGIN
-        self._win_h     = 52
-        self._state: dict = {"estado": "idle", "transcripcion": "", "ronda": 0, "max_rondas": 6}
-        self._wm_t      = False   # T visible en wordmark
-        self._wm_e      = False   # E visible en wordmark
+        self.root           = root
+        self._t0            = time.monotonic()
+        self._base_y        = MARGIN
+        self._win_h         = 62   # era 52 → round(52*1.2)=62
+        self._state: dict   = {"estado": "idle", "transcripcion": "", "ronda": 0, "max_rondas": 6}
+        self._wm_t          = False
+        self._wm_e          = False
+        self._eq_heights    = list(EQ_FRAC)
+        self._eq_targets    = [random.uniform(0.3, 1.0) for _ in range(len(EQ_FRAC))]
+        self._eq_tick_count = 0
 
         self._setup_window()
         self._build_ui()
@@ -90,9 +93,9 @@ class HudWindow:
         r = self.root
         r.title("")
         r.overrideredirect(True)
-        r.configure(bg=BG)
+        r.configure(bg=C_BORDER)   # color de borde visible en gaps
         r.attributes("-topmost", True)
-        r.attributes("-alpha", 0.94)
+        r.attributes("-alpha", 0.92)
         sw = r.winfo_screenwidth()
         r.geometry(f"{WIN_W}x{self._win_h}+{sw - WIN_W - MARGIN}+{MARGIN}")
         r.update_idletasks()
@@ -103,7 +106,7 @@ class HudWindow:
             return
         try:
             import ctypes
-            hwnd = self.root.winfo_id()
+            hwnd             = self.root.winfo_id()
             GWL_EXSTYLE      = -20
             WS_EX_NOACTIVATE = 0x08000000
             WS_EX_TOOLWINDOW = 0x00000080
@@ -116,7 +119,11 @@ class HudWindow:
 
     # ── UI ────────────────────────────────────────────────────────────────────
     def _build_ui(self) -> None:
-        outer = tk.Frame(self.root, bg=BG, padx=14, pady=10)
+        # Marco de 1px que simula el border CSS del .hud.light
+        border_f = tk.Frame(self.root, bg=C_BORDER, padx=1, pady=1)
+        border_f.pack(fill=tk.BOTH, expand=True)
+
+        outer = tk.Frame(border_f, bg=BG, padx=17, pady=12)
         outer.pack(fill=tk.BOTH, expand=True)
 
         # Header: logo (izquierda) + status (derecha)
@@ -126,10 +133,10 @@ class HudWindow:
         logo_f = tk.Frame(hdr, bg=BG)
         logo_f.pack(side=tk.LEFT)
 
-        self._ic = tk.Canvas(logo_f, width=22, height=20, bg=BG, highlightthickness=0)
-        self._ic.pack(side=tk.LEFT, padx=(0, 7))
+        self._ic = tk.Canvas(logo_f, width=26, height=24, bg=BG, highlightthickness=0)
+        self._ic.pack(side=tk.LEFT, padx=(0, 8))
 
-        self._wmc = tk.Canvas(logo_f, width=40, height=18, bg=BG, highlightthickness=0)
+        self._wmc = tk.Canvas(logo_f, width=48, height=22, bg=BG, highlightthickness=0)
         self._wmc.pack(side=tk.LEFT)
 
         status_f = tk.Frame(hdr, bg=BG)
@@ -137,48 +144,80 @@ class HudWindow:
 
         self._dot_cv = tk.Canvas(status_f, width=DOT_SIZE + 2, height=DOT_SIZE + 2,
                                   bg=BG, highlightthickness=0)
-        self._dot_cv.pack(side=tk.LEFT, padx=(0, 5))
+        self._dot_cv.pack(side=tk.LEFT, padx=(0, 6))
 
         self._status_lbl = tk.Label(status_f, text="EN ESPERA",
                                      fg=C_IDLE, bg=BG, font=F_MONO)
         self._status_lbl.pack(side=tk.LEFT)
 
-        # Divider (1px, color cambia por estado)
+        # Divider (1px, color según estado)
         self._div = tk.Frame(outer, height=1, bg=C_PROC)
 
-        # Info row: ecualizador + etiqueta de ronda/audio
+        # Info row: ecualizador + etiqueta ronda/audio
         self._info_f = tk.Frame(outer, bg=BG)
 
         eq_total_w = (EQ_W + EQ_GAP) * len(EQ_FRAC) - EQ_GAP
         self._eq_cv = tk.Canvas(self._info_f, width=eq_total_w, height=EQ_H_MAX,
                                   bg=BG, highlightthickness=0)
-        self._eq_cv.pack(side=tk.LEFT, padx=(0, 6), anchor=tk.CENTER)
+        self._eq_cv.pack(side=tk.LEFT, padx=(0, 7), anchor=tk.CENTER)
 
         self._info_lbl = tk.Label(self._info_f, text="ronda 1/6",
                                    fg=C_DIM, bg=BG, font=F_MONO)
         self._info_lbl.pack(side=tk.LEFT, anchor=tk.CENTER)
 
-        # Transcript (borde simulado con Frame externo de 1px)
+        # Transcript editable (borde simulado + tk.Text)
         self._tx_border = tk.Frame(outer, bg=C_PROC, padx=1, pady=1)
-        tx_inner = tk.Frame(self._tx_border, bg=C_TX_BG, padx=8, pady=6)
+        tx_inner = tk.Frame(self._tx_border, bg=C_TX_BG, padx=10, pady=7)
         tx_inner.pack(fill=tk.BOTH, expand=True)
-        self._tx_lbl = tk.Label(tx_inner, text="",
-                                 fg=C_TEXT, bg=C_TX_BG, font=F_MONO9,
-                                 justify=tk.LEFT, wraplength=220, anchor="w")
-        self._tx_lbl.pack(fill=tk.X, anchor="w")
+        self._tx_txt = tk.Text(
+            tx_inner,
+            height=3,
+            state="normal",
+            cursor="xterm",
+            wrap=tk.WORD,
+            fg=C_TX_FG,
+            bg=C_TX_BG,
+            insertbackground=C_PROC,   # cursor de texto cian
+            font=F_MONO11,
+            relief=tk.FLAT,
+            bd=0,
+            selectbackground="#dde8f4",
+        )
+        self._tx_txt.pack(fill=tk.X)
+
+        # Corner brackets decorativos (esquinas opuestas, estilo .hud::before/.hud::after)
+        self._brk_tl = tk.Canvas(self.root, width=BRACKET_SZ, height=BRACKET_SZ,
+                                   bg=BG, highlightthickness=0)
+        self._brk_tl.place(x=0, y=0)
+        self._brk_br = tk.Canvas(self.root, width=BRACKET_SZ, height=BRACKET_SZ,
+                                   bg=BG, highlightthickness=0)
+        self._brk_br.place(relx=1.0, rely=1.0, x=-BRACKET_SZ, y=-BRACKET_SZ)
 
         # Render inicial
         self._render_icon(C_IDLE)
-        self._render_dot(C_IDLE, t=0.0)
-        self._render_eq(C_IDLE, t=0.0)
+        self._render_dot(C_IDLE)
+        self._render_eq(C_IDLE)
+        self._render_brackets(C_IDLE)
         self._set_layout_idle()
 
-    # ── Dibujo del ícono robot ────────────────────────────────────────────────
+    # ── Bracket corners ───────────────────────────────────────────────────────
+    def _render_brackets(self, color: str) -> None:
+        """Líneas L en esquina superior-izquierda e inferior-derecha."""
+        n = BRACKET_SZ - 1
+        for cv, lines in [
+            (self._brk_tl, [(0, 0, 8, 0), (0, 0, 0, 8)]),
+            (self._brk_br, [(n - 8, n, n, n), (n, n - 8, n, n)]),
+        ]:
+            cv.delete("all")
+            for x1, y1, x2, y2 in lines:
+                cv.create_line(x1, y1, x2, y2, fill=color, width=1.5)
+
+    # ── Ícono robot ───────────────────────────────────────────────────────────
     def _render_icon(self, color: str) -> None:
-        """Dibuja el robot (SVG viewBox 0 0 64 64 → 22px wide)."""
-        c = self._ic
+        """SVG viewBox 0 0 64 64 → 26px wide (+20% sobre 22px original)."""
+        c  = self._ic
         c.delete("all")
-        s  = 22 / 64
+        s  = 26 / 64
         lw = 1.5
 
         def L(x1, y1, x2, y2):
@@ -193,57 +232,50 @@ class HudWindow:
             c.create_rectangle(x*s, y*s, (x+w)*s, (y+h)*s,
                                 outline=color, fill="", width=lw)
 
-        L(20, 14, 16, 6)    # antena izquierda
-        L(44, 14, 48, 6)    # antena derecha
-        O(16, 6, 3)          # punto antena izq
-        O(48, 6, 3)          # punto antena der
-        R(10, 14, 44, 30)   # cuerpo
-        O(25, 29, 4)         # ojo izquierdo
-        O(39, 29, 4)         # ojo derecho
+        L(20, 14, 16, 6)
+        L(44, 14, 48, 6)
+        O(16, 6, 3)
+        O(48, 6, 3)
+        R(10, 14, 44, 30)
+        O(25, 29, 4)
+        O(39, 29, 4)
 
-    # ── Status dot ────────────────────────────────────────────────────────────
-    def _render_dot(self, color: str, *, t: float) -> None:
-        c = self._dot_cv
+    # ── Status dot (pulso por interpolación de color, seno continuo) ──────────
+    def _render_dot(self, accent: str) -> None:
+        c  = self._dot_cv
         c.delete("all")
-        estado = self._state.get("estado", "idle")
-        if estado == "idle":
-            r = DOT_SIZE // 2
-        else:
-            # pulso: radio oscila entre 2 y 3px
-            pulse = 0.5 + 0.5 * math.sin(2 * math.pi * t / DOT_PULSE_MS)
-            r = int(2 + 1 * pulse)
         cx = (DOT_SIZE + 2) // 2
         cy = (DOT_SIZE + 2) // 2
+        r  = DOT_SIZE // 2
+        estado = self._state.get("estado", "idle")
+        if estado == "idle":
+            color = C_IDLE
+        else:
+            intensidad = (1.0 + math.sin(time.monotonic() * 4.0)) / 2.0
+            color = _interpolar_color(BG, accent, intensidad)
         c.create_oval(cx - r, cy - r, cx + r, cy + r, fill=color, outline="")
 
-    # ── Ecualizador ───────────────────────────────────────────────────────────
-    def _render_eq(self, color: str, *, t: float) -> None:
-        """6 barras animadas. scaleY: 0.4→1.0→0.4 por ciclo (igual que HTML)."""
+    # ── Ecualizador (alturas interpoladas hacia targets aleatorios) ───────────
+    def _render_eq(self, color: str) -> None:
         c = self._eq_cv
         c.delete("all")
-        for i, (frac, phase_off) in enumerate(zip(EQ_FRAC, EQ_PHASE_OFF)):
-            # scale(t) = 0.4 + 0.6 * (0.5 - 0.5*cos(2π*(t/period + phase_off)))
-            phase  = 2 * math.pi * (t / EQ_PERIOD + phase_off)
-            scale  = 0.4 + 0.3 * (1 - math.cos(phase))
-            h      = max(2, int(EQ_H_MAX * frac * scale))
-            x0     = i * (EQ_W + EQ_GAP)
+        for i, h_frac in enumerate(self._eq_heights):
+            h  = max(2, int(EQ_H_MAX * h_frac))
+            x0 = i * (EQ_W + EQ_GAP)
             c.create_rectangle(x0, EQ_H_MAX - h, x0 + EQ_W, EQ_H_MAX,
                                 fill=color, outline="")
 
     # ── Wordmark ──────────────────────────────────────────────────────────────
     def _render_wordmark(self) -> None:
-        """Dibuja STEM en el canvas. T y E en BG (invisible) hasta que se revelan."""
         c = self._wmc
         c.delete("all")
-        y = 9
-        # Posiciones aproximadas para Segoe UI 9 Bold (~7px por carácter)
-        c.create_text(1,  y, text="S", fill=C_TEXT,                     font=F_WM, anchor="w")
-        c.create_text(9,  y, text="T", fill=(C_TEXT if self._wm_t else BG), font=F_WM, anchor="w")
-        c.create_text(17, y, text="E", fill=(C_E    if self._wm_e else BG), font=F_WM, anchor="w")
-        c.create_text(25, y, text="M", fill=C_TEXT,                     font=F_WM, anchor="w")
+        y = 11
+        c.create_text(1,  y, text="S", fill=C_TEXT,                       font=F_WM, anchor="w")
+        c.create_text(11, y, text="T", fill=(C_TEXT if self._wm_t else BG), font=F_WM, anchor="w")
+        c.create_text(21, y, text="E", fill=(C_E    if self._wm_e else BG), font=F_WM, anchor="w")
+        c.create_text(31, y, text="M", fill=C_TEXT,                       font=F_WM, anchor="w")
 
     def _wordmark_init(self) -> None:
-        """Inicia la animación de entrada: S y M de inmediato, T a 350ms, E a 550ms."""
         self._wm_t = False
         self._wm_e = False
         self._render_wordmark()
@@ -268,10 +300,13 @@ class HudWindow:
         self._div.pack(fill=tk.X, pady=(8, 0))
         self._info_f.pack(fill=tk.X, pady=(6, 0))
         self._info_lbl.config(text=f"ronda {ronda}/{max_r}")
-        short = (tx[:58] + "…") if len(tx) > 58 else tx
-        self._tx_lbl.config(text=f"> {short}")
         self._tx_border.config(bg=C_PROC)
         self._tx_border.pack(fill=tk.X, pady=(6, 0))
+        # No sobreescribir si el usuario está editando el widget
+        if self.root.focus_get() is not self._tx_txt:
+            short = (tx[:70] + "…") if len(tx) > 70 else tx
+            self._tx_txt.delete("1.0", tk.END)
+            self._tx_txt.insert(tk.END, f"> {short}")
 
     def _set_layout_hablando(self) -> None:
         self._div.pack(fill=tk.X, pady=(8, 0))
@@ -289,6 +324,7 @@ class HudWindow:
         accent = self._accent_for(estado)
         self._render_icon(accent)
         self._render_wordmark()
+        self._render_brackets(accent)
 
         if estado == "idle":
             self._status_lbl.config(text="EN ESPERA", fg=C_IDLE)
@@ -303,7 +339,7 @@ class HudWindow:
             self._set_layout_hablando()
 
         self.root.update_idletasks()
-        self._win_h = max(self.root.winfo_reqheight(), 50)
+        self._win_h = max(self.root.winfo_reqheight(), 62)
 
     @staticmethod
     def _accent_for(estado: str) -> str:
@@ -320,20 +356,26 @@ class HudWindow:
             pass
         self.root.after(POLL_MS, self._poll)
 
-    # ── Tick de animación (~20fps) ────────────────────────────────────────────
+    # ── Tick de animación (~60fps) ────────────────────────────────────────────
     def _tick(self) -> None:
         t      = time.monotonic() - self._t0
         estado = self._state.get("estado", "idle")
         accent = self._accent_for(estado)
 
-        # Ecualizador (solo visible en procesando/hablando)
+        # Ecualizador: lerp suave hacia targets aleatorios (solo activo en procesando/hablando)
         if estado in ("procesando", "hablando"):
-            self._render_eq(accent, t=t)
+            self._eq_tick_count += 1
+            if self._eq_tick_count >= EQ_RETARGET_TICKS:
+                self._eq_tick_count = 0
+                self._eq_targets = [random.uniform(0.25, 1.0) for _ in range(len(EQ_FRAC))]
+            for i in range(len(EQ_FRAC)):
+                self._eq_heights[i] += (self._eq_targets[i] - self._eq_heights[i]) * EQ_LERP
+            self._render_eq(accent)
 
-        # Dot pulse
-        self._render_dot(accent, t=t)
+        # Dot: pulso por interpolación de color (seno continuo, sin saltos de radio)
+        self._render_dot(accent)
 
-        # Flotación vertical
+        # Flotación vertical: función seno a ~60fps (movimiento continuo sin acumulación)
         float_y = FLOAT_AMP * math.sin(2 * math.pi * t / FLOAT_PERIOD)
         y       = int(self._base_y + float_y)
         sw      = self.root.winfo_screenwidth()

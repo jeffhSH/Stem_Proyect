@@ -114,80 +114,17 @@ def _capturar_audio_ia(audio_q: queue.Queue, rec: vosk.KaldiRecognizer, timeout:
     return b"".join(chunks)
 
 
-def _esperar_followup_ia(audio_q: queue.Queue, rec: vosk.KaldiRecognizer) -> bool:
-    """Escucha 6 s con Vosk tras la respuesta IA. True = continuar, False = cerrar/timeout."""
-    print(f"{_ts()}[ia] inicio espera post-respuesta (6 s) — 'no' continúa, silencio/'sí' cierra...")
-    _drenar_audio(audio_q)
-    rec.Reset()
-    t_fin = time.time() + 6.0
-    while time.time() < t_fin:
-        try:
-            data = audio_q.get(timeout=max(0.1, t_fin - time.time()))
-        except queue.Empty:
-            break
-        if rec.AcceptWaveform(data):
-            texto = json.loads(rec.Result()).get("text", "").lower().strip()
-            if texto:
-                print(f"{_ts()}[ia] followup oído: '{texto}'")
-                if "no" in texto:
-                    rec.Reset()
-                    return True
-                break
-        else:
-            texto = json.loads(rec.PartialResult()).get("partial", "").lower().strip()
-            if texto and "no" in texto:
-                print(f"{_ts()}[ia] followup oído (parcial): '{texto}'")
-                rec.Reset()
-                return True
-    print(f"{_ts()}[ia] cerrando modo inteligente.")
-    rec.Reset()
-    return False
-
-
 def _activar_modo_ia_interno(audio_q: queue.Queue, rec: vosk.KaldiRecognizer) -> None:
-    """Captura audio, transcribe con Faster-Whisper y decide modo vía GPT tool_choice."""
-    from ia import transcribir_whisper, decidir_y_actuar, DEBUG_TEXTO, _cancelar  # noqa: PLC0415
+    """Inicia una sesión inteligente continua con historial de conversación acumulado."""
+    from ia import sesion_inteligente, _cancelar  # noqa: PLC0415
     try:
-        from hud_control import set_estado, set_transcripcion  # noqa: PLC0415
+        from hud_control import set_estado  # noqa: PLC0415
     except ImportError:
-        def set_estado(*a, **kw): pass       # noqa: E704
-        def set_transcripcion(*a): pass      # noqa: E704
+        def set_estado(*a, **kw): pass  # noqa: E704
 
     _cancelar.clear()
-
     try:
-        while True:
-            set_estado("procesando")
-
-            if DEBUG_TEXTO:
-                print(f"{_ts()}[ia] di tu pregunta (debug)...")
-                try:
-                    texto = input("[DEBUG] escribe tu pregunta: ").strip()
-                except (EOFError, KeyboardInterrupt):
-                    return
-                if not texto:
-                    return
-                set_transcripcion(texto)
-            else:
-                print(f"{_ts()}[ia] di tu pregunta...")
-                audio_bytes = _capturar_audio_ia(audio_q, rec)
-                if not audio_bytes:
-                    print(f"{_ts()}[ia] no se capturó audio")
-                    return
-                print(f"{_ts()}[ia] inicio transcripción Faster-Whisper...")
-                texto = transcribir_whisper(audio_bytes)
-                if not texto:
-                    print(f"{_ts()}[ia] no se detectó texto")
-                    return
-                print(f"{_ts()}[ia] fin transcripción — oído: '{texto}'")
-                set_transcripcion(texto)
-
-            modo = decidir_y_actuar(texto, audio_q, rec)
-            if modo == "accion":
-                return
-
-            if not _esperar_followup_ia(audio_q, rec):
-                return
+        sesion_inteligente(audio_q, rec)
     finally:
         set_estado("idle")
 

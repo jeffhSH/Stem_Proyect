@@ -34,10 +34,13 @@ def _read() -> dict:
 
 
 def _write(data: dict) -> None:
-    """Escritura atómica: escribe en .tmp y reemplaza el destino."""
-    tmp = _STATE_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(_STATE_FILE)
+    """Escritura atómica: escribe en .tmp y reemplaza el destino. No fatal si falla."""
+    try:
+        tmp = _STATE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(_STATE_FILE)
+    except OSError:
+        pass
 
 
 def set_estado(estado: str, *, ronda: int = 0, max_rondas: int = 6) -> None:
