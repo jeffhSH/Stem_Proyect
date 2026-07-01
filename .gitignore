@@ -23,3 +23,14 @@ user_variants.json
 
 # Logs de ejecución local (generados en tiempo de ejecución)
 logs/
+
+# Contactos (datos personales)
+contactos.json
+
+# Binarios externos y temporales
+chromedriver.exe
+boton_enviar_wa.png
+
+# Diagnóstico y temporales de desarrollo
+_diag_tmp.py
+test_resultados_nodos.xlsx

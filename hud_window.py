@@ -15,6 +15,8 @@ import time
 import tkinter as tk
 from pathlib import Path
 
+import hud_control
+
 # ── Estado ──────────────────────────────────────────────────────────────────
 STATE_FILE = Path(tempfile.gettempdir()) / "stem_hud_state.json"
 
@@ -74,6 +76,7 @@ class HudWindow:
         self._base_y        = MARGIN
         self._win_h         = 62   # era 52 → round(52*1.2)=62
         self._state: dict   = {"estado": "idle", "transcripcion": "", "ronda": 0, "max_rondas": 6}
+        self._pregunta_id: str | None = None
         self._wm_t          = False
         self._wm_e          = False
         self._eq_heights    = list(EQ_FRAC)
@@ -126,9 +129,17 @@ class HudWindow:
         outer = tk.Frame(border_f, bg=BG, padx=17, pady=12)
         outer.pack(fill=tk.BOTH, expand=True)
 
-        # Header: logo (izquierda) + status (derecha)
+        # Header: logo (izquierda) + status + close (derecha)
         hdr = tk.Frame(outer, bg=BG)
         hdr.pack(fill=tk.X)
+
+        # Botón × — pack RIGHT primero → queda en el extremo derecho
+        self._close_btn = tk.Label(hdr, text="×", fg=C_DIM, bg=BG,
+                                    font=("Segoe UI", 13), cursor="hand2")
+        self._close_btn.pack(side=tk.RIGHT, padx=(6, 0))
+        self._close_btn.bind("<Button-1>", lambda e: self.root.destroy())
+        self._close_btn.bind("<Enter>",    lambda e: self._close_btn.config(fg="#d04040"))
+        self._close_btn.bind("<Leave>",    lambda e: self._close_btn.config(fg=C_DIM))
 
         logo_f = tk.Frame(hdr, bg=BG)
         logo_f.pack(side=tk.LEFT)
@@ -192,6 +203,21 @@ class HudWindow:
         self._brk_br = tk.Canvas(self.root, width=BRACKET_SZ, height=BRACKET_SZ,
                                    bg=BG, highlightthickness=0)
         self._brk_br.place(relx=1.0, rely=1.0, x=-BRACKET_SZ, y=-BRACKET_SZ)
+
+        # Frame de botones de confirmación (oculto por defecto)
+        self._btn_frame = tk.Frame(outer, bg=BG)
+        self._btn1 = tk.Button(
+            self._btn_frame, text="", bg=C_PROC, fg="#ffffff",
+            font=F_MONO, relief=tk.FLAT, bd=0, padx=10, pady=4,
+            activebackground="#1686aa", activeforeground="#ffffff", cursor="hand2",
+        )
+        self._btn2 = tk.Button(
+            self._btn_frame, text="", bg=BG, fg=C_DIM,
+            font=F_MONO, relief=tk.FLAT, bd=1, padx=10, pady=4,
+            activebackground="#e0ecf4", activeforeground=C_TEXT, cursor="hand2",
+        )
+        self._btn1.pack(side=tk.LEFT, padx=(0, 8))
+        self._btn2.pack(side=tk.LEFT)
 
         # Render inicial
         self._render_icon(C_IDLE)
@@ -295,6 +321,7 @@ class HudWindow:
         self._div.pack_forget()
         self._info_f.pack_forget()
         self._tx_border.pack_forget()
+        self._btn_frame.pack_forget()
 
     def _set_layout_procesando(self, ronda: int, max_r: int, tx: str) -> None:
         self._div.pack(fill=tk.X, pady=(8, 0))
@@ -302,6 +329,7 @@ class HudWindow:
         self._info_lbl.config(text=f"ronda {ronda}/{max_r}")
         self._tx_border.config(bg=C_PROC)
         self._tx_border.pack(fill=tk.X, pady=(6, 0))
+        self._btn_frame.pack_forget()
         # No sobreescribir si el usuario está editando el widget
         if self.root.focus_get() is not self._tx_txt:
             short = (tx[:70] + "…") if len(tx) > 70 else tx
@@ -313,20 +341,72 @@ class HudWindow:
         self._info_f.pack(fill=tk.X, pady=(6, 0))
         self._info_lbl.config(text="audio en curso")
         self._tx_border.pack_forget()
+        self._btn_frame.pack_forget()
+
+    def _set_layout_pregunta(self, texto: str, opciones: dict, pregunta_id: str) -> None:
+        self._div.pack(fill=tk.X, pady=(8, 0))
+        self._info_f.pack(fill=tk.X, pady=(6, 0))
+        self._info_lbl.config(text="esperando respuesta")
+        self._tx_border.config(bg=C_PROC)
+        self._tx_border.pack(fill=tk.X, pady=(6, 0))
+        self._tx_txt.delete("1.0", tk.END)
+        self._tx_txt.insert(tk.END, texto)
+
+        label1 = f"1 · {opciones.get('1', 'Sí')}"
+        label2 = f"2 · {opciones.get('2', 'No')}"
+        self._btn1.config(text=label1, command=lambda: self._responder(pregunta_id, "1"))
+        self._btn2.config(text=label2, command=lambda: self._responder(pregunta_id, "2"))
+        self._btn_frame.pack(fill=tk.X, pady=(8, 0))
+
+        # Bind teclas 1/2 (puede no funcionar si WS_EX_NOACTIVATE impide foco)
+        self._pregunta_id = pregunta_id
+        self.root.bind("<Key-1>", lambda e: self._responder(pregunta_id, "1"))
+        self.root.bind("<Key-2>", lambda e: self._responder(pregunta_id, "2"))
+
+    def _ocultar_botones(self) -> None:
+        self._btn_frame.pack_forget()
+        self._pregunta_id = None
+        self.root.unbind("<Key-1>")
+        self.root.unbind("<Key-2>")
+
+    def _responder(self, pregunta_id: str, respuesta: str) -> None:
+        hud_control.responder_pregunta_hud(pregunta_id, respuesta)
+        self._ocultar_botones()
 
     # ── Aplicar estado ────────────────────────────────────────────────────────
     def _apply_state(self, data: dict) -> None:
-        estado = data.get("estado", "idle")
-        tx     = data.get("transcripcion", "")
-        ronda  = data.get("ronda", 0)
-        max_r  = data.get("max_rondas", 6)
+        pregunta = data.get("pregunta")
+        estado   = data.get("estado", "idle")
+        tx       = data.get("transcripcion", "")
+        ronda    = data.get("ronda", 0)
+        max_r    = data.get("max_rondas", 6)
 
-        accent = self._accent_for(estado)
+        accent = self._accent_for("procesando" if pregunta else estado)
         self._render_icon(accent)
         self._render_wordmark()
         self._render_brackets(accent)
 
-        if estado == "idle":
+        if pregunta:
+            self._status_lbl.config(text="CONFIRMACIÓN", fg=C_PROC)
+            self._div.config(bg=C_PROC)
+            pid = pregunta.get("id", "")
+            if pid != self._pregunta_id:
+                self._set_layout_pregunta(
+                    pregunta.get("texto", ""),
+                    pregunta.get("opciones", {"1": "Sí", "2": "No"}),
+                    pid,
+                )
+        elif self._pregunta_id is not None:
+            self._ocultar_botones()
+            # volver al estado normal
+            if estado == "idle":
+                self._status_lbl.config(text="EN ESPERA", fg=C_IDLE)
+                self._set_layout_idle()
+            elif estado == "procesando":
+                self._status_lbl.config(text="PROCESANDO", fg=C_PROC)
+                self._div.config(bg=C_PROC)
+                self._set_layout_procesando(ronda, max_r, tx)
+        elif estado == "idle":
             self._status_lbl.config(text="EN ESPERA", fg=C_IDLE)
             self._set_layout_idle()
         elif estado == "procesando":

@@ -33,6 +33,23 @@ _modelo_whisper: WhisperModel | None = None
 _whisper_lock       = threading.Lock()
 _SENTENCE_END       = frozenset(".?!")
 _tts_ya_reproducido = threading.Event()
+_interrumpir_tts    = threading.Event()
+_tts_reproduciendo  = threading.Event()
+_barge_in           = threading.Event()
+_turno_id           = [0]
+
+# ── Cartesia TTS ───────────────────────────────────────────────────────────────
+_CARTESIA_VOICE_ID = "2fc4f1ec-bfd0-46f1-8e6d-d4279eaaf838"
+_CARTESIA_MODEL    = "sonic-3.5"
+try:
+    from cartesia import Cartesia as _CartesiaClient
+    _cartesia_client = (
+        _CartesiaClient(api_key=os.getenv("CARTESIA_API_KEY"))
+        if os.getenv("CARTESIA_API_KEY")
+        else None
+    )
+except ImportError:
+    _cartesia_client = None
 
 VOICE = "es-MX-JorgeNeural"
 
@@ -120,7 +137,8 @@ _TOOLS = [
                                         "Nombre de la tool que se usará: "
                                         "ejecutar_accion / enviar_whatsapp / "
                                         "enviar_archivo_whatsapp / buscar_y_abrir_youtube / "
-                                        "explorar_carpeta / responder_en_voz"
+                                        "explorar_carpeta / responder_en_voz / "
+                                        "esperar_archivo_y_confirmar"
                                     ),
                                 },
                                 "descripcion": {
@@ -227,6 +245,42 @@ _TOOLS = [
                     }
                 },
                 "required": ["carpeta"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "esperar_archivo_y_confirmar",
+            "description": (
+                "Espera a que aparezca un archivo en una carpeta (ej. un instalador "
+                "descargándose) y, al encontrarlo, pide confirmación al usuario vía HUD "
+                "antes de ejecutarlo. Usar cuando el usuario pide una acción condicionada "
+                "a que algo termine de descargarse. Lanza el monitoreo en segundo plano "
+                "y devuelve de inmediato."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "nombre_archivo": {
+                        "type": "string",
+                        "description": "Nombre o patrón del archivo a buscar, ej. 'OllamaSetup.exe'",
+                    },
+                    "carpeta": {
+                        "type": "string",
+                        "enum": ["descargas", "escritorio", "documentos"],
+                        "description": "Carpeta donde buscar el archivo",
+                    },
+                    "comando_al_confirmar": {
+                        "type": "string",
+                        "description": (
+                            "Código Python a ejecutar si el usuario confirma, "
+                            "ej. \"subprocess.Popen([ruta_archivo])\". "
+                            "Usar {ruta} como placeholder para la ruta real del archivo encontrado."
+                        ),
+                    },
+                },
+                "required": ["nombre_archivo", "carpeta", "comando_al_confirmar"],
             },
         },
     },
@@ -365,22 +419,35 @@ def _drenar_audio(audio_q: _stdlib_queue.Queue) -> None:
 
 
 def _capturar_audio(audio_q: _stdlib_queue.Queue, rec: object, timeout: float = 8.0) -> bytes:
-    """Captura audio hasta que Vosk detecta silencio final o timeout."""
+    """Captura audio esperando 900ms de silencio sostenido tras inicio de habla, o timeout absoluto."""
+    SILENCIO_CORTE = 0.9
     chunks: list[bytes] = []
     rec.Reset()
-    t_inicio = time.time()
-    t_fin    = t_inicio + timeout
+    t_fin = time.time() + timeout
+    hablando = False
+    t_ultimo_texto = 0.0
+
     while time.time() < t_fin:
         try:
-            data = audio_q.get(timeout=0.5)
+            data = audio_q.get(timeout=0.1)
         except _stdlib_queue.Empty:
+            if hablando and (time.time() - t_ultimo_texto) >= SILENCIO_CORTE:
+                break
             continue
         chunks.append(data)
         if rec.AcceptWaveform(data):
             result_text = json.loads(rec.Result()).get("text", "").strip()
-            elapsed     = time.time() - t_inicio
-            if result_text and (len(result_text.split()) > 3 or elapsed > 4.0):
-                break
+            if result_text:
+                hablando = True
+                t_ultimo_texto = time.time()
+        else:
+            partial = json.loads(rec.PartialResult()).get("partial", "").strip()
+            if partial:
+                hablando = True
+                t_ultimo_texto = time.time()
+        if hablando and (time.time() - t_ultimo_texto) >= SILENCIO_CORTE:
+            break
+
     rec.Reset()
     return b"".join(chunks)
 
@@ -408,14 +475,11 @@ def _escuchar_confirmacion(audio_q: _stdlib_queue.Queue, rec: object) -> str:
         if not texto:
             continue
         print(f"{_ts()}[agente] confirmación: '{texto}'")
-        palabras = texto.split()
-        if any(w in ("cancelar",) for w in palabras):
+        palabras = set(_normalizar_respuesta(texto).split())
+        if palabras & _PALABRAS_NO:
             rec.Reset()
             return "cancelar"
-        if any(w == "no" for w in palabras):
-            rec.Reset()
-            return "no"
-        if any(w in ("sí", "si") for w in palabras):
+        if palabras & _PALABRAS_SI:
             rec.Reset()
             return "si"
     print(f"{_ts()}[agente] timeout sin confirmación → cancelar")
@@ -434,6 +498,27 @@ async def _tts_bytes_async(texto: str) -> bytes:
     return b"".join(chunks)
 
 
+def _reproducir_audio(samples: np.ndarray, sample_rate: int) -> None:
+    """Reproducción interrompible vía barge-in. `_interrumpir_tts` activo → sd.stop() inmediato."""
+    _interrumpir_tts.clear()
+    _tts_reproduciendo.set()
+    try:
+        sd.play(samples, sample_rate)
+        while True:
+            if _interrumpir_tts.wait(timeout=0.05):
+                sd.stop()
+                print(f"{_ts()}[ia] [INTERRUPCIÓN] audio cortado por barge-in")
+                return
+            try:
+                activo = sd.get_stream().active
+            except Exception:
+                break
+            if not activo:
+                break
+    finally:
+        _tts_reproduciendo.clear()
+
+
 def _reproducir_oracion(texto: str) -> None:
     """Sintetiza una oración con Edge TTS streaming y la reproduce bloqueando hasta el fin."""
     print(f"{_ts()}[ia] oración → TTS: '{texto}'")
@@ -449,11 +534,18 @@ def _reproducir_oracion(texto: str) -> None:
         )
         samples = np.frombuffer(bytes(decoded.samples), dtype=np.int16)
         print(f"{_ts()}[ia] TTS reproduciendo...")
-        sd.play(samples, decoded.sample_rate)
-        sd.wait()
+        _reproducir_audio(samples, decoded.sample_rate)
         print(f"{_ts()}[ia] fin TTS oración")
     except Exception as exc:
         print(f"{_ts()}[ia] TTS error en oración: {exc}")
+
+
+def _hablar_stem(texto: str) -> None:
+    """TTS para el Orchestrator: Cartesia (Mateo) si disponible, Edge TTS si no."""
+    if _cartesia_client is not None:
+        _hablar_cartesia(texto)
+    else:
+        _hablar_edge_original(texto)
 
 
 def _tts_worker(q: _stdlib_queue.Queue) -> None:
@@ -463,8 +555,12 @@ def _tts_worker(q: _stdlib_queue.Queue) -> None:
         if item is None:
             q.task_done()
             return
-        _reproducir_oracion(item)
-        q.task_done()
+        if _interrumpir_tts.is_set():
+            print(f"{_ts()}[ia] [INTERRUPCIÓN] oración descartada por barge-in")
+            q.task_done()
+        else:
+            _reproducir_oracion(item)
+            q.task_done()
 
 
 def _flush_oraciones(buffer: str, tts_q: _stdlib_queue.Queue) -> str:
@@ -529,16 +625,9 @@ def consultar_gpt(texto: str) -> str:
     return full_text.strip()
 
 
-def hablar_edge(texto: str) -> None:
-    """
-    Sintetiza y reproduce texto con Edge TTS streaming.
-    No-op si consultar_gpt() ya reprodujo el audio en esta vuelta.
-    """
-    if _tts_ya_reproducido.is_set():
-        _tts_ya_reproducido.clear()
-        return
-
-    print(f"{_ts()}[ia] inicio TTS (sintetizando...)")
+def _hablar_edge_original(texto: str) -> None:
+    """Sintetiza y reproduce texto con Edge TTS. Fallback cuando Cartesia no está disponible."""
+    print(f"{_ts()}[ia] inicio TTS Edge (sintetizando...)")
     try:
         audio_bytes = asyncio.run(_tts_bytes_async(texto))
         decoded = miniaudio.decode(
@@ -548,12 +637,124 @@ def hablar_edge(texto: str) -> None:
             sample_rate=24000,
         )
         samples = np.frombuffer(bytes(decoded.samples), dtype=np.int16)
-        print(f"{_ts()}[ia] TTS reproduciendo...")
-        sd.play(samples, decoded.sample_rate)
-        sd.wait()
-        print(f"{_ts()}[ia] fin TTS")
+        print(f"{_ts()}[ia] TTS Edge reproduciendo...")
+        _reproducir_audio(samples, decoded.sample_rate)
+        print(f"{_ts()}[ia] fin TTS Edge")
     except Exception as exc:
-        print(f"{_ts()}[ia] TTS error: {exc}")
+        print(f"{_ts()}[ia] TTS Edge error: {exc}")
+
+
+def _hablar_cartesia(texto: str) -> None:
+    """Sintetiza y reproduce texto con Cartesia (voz Mateo). Fallback a Edge TTS si falla."""
+    print(f"{_ts()}[ia] inicio TTS Cartesia (sintetizando...)")
+    try:
+        audio_bytes = b"".join(
+            _cartesia_client.tts.bytes(
+                model_id=_CARTESIA_MODEL,
+                transcript=texto,
+                voice={"mode": "id", "id": _CARTESIA_VOICE_ID},
+                language="es",
+                output_format={
+                    "container": "wav",
+                    "encoding": "pcm_s16le",
+                    "sample_rate": 44100,
+                },
+            )
+        )
+        decoded = miniaudio.decode(
+            audio_bytes,
+            output_format=miniaudio.SampleFormat.SIGNED16,
+            nchannels=1,
+            sample_rate=44100,
+        )
+        samples = np.frombuffer(bytes(decoded.samples), dtype=np.int16)
+        print(f"{_ts()}[ia] TTS Cartesia reproduciendo...")
+        _reproducir_audio(samples, decoded.sample_rate)
+        print(f"{_ts()}[ia] fin TTS Cartesia")
+    except Exception as exc:
+        print(f"{_ts()}[ia] error TTS Cartesia: {exc} — fallback a Edge TTS")
+        _hablar_edge_original(texto)
+
+
+def hablar_edge(texto: str) -> None:
+    """
+    Punto de entrada TTS principal. Usa Cartesia (Mateo) si CARTESIA_API_KEY está en .env,
+    Edge TTS (Jorge) como fallback. No-op si el audio ya fue reproducido en este turno.
+    """
+    if _tts_ya_reproducido.is_set():
+        _tts_ya_reproducido.clear()
+        return
+
+    if _cartesia_client is not None:
+        _hablar_cartesia(texto)
+    else:
+        _hablar_edge_original(texto)
+    print(f"{_ts()}[diag] TTS fin")
+
+
+# ── esperar_archivo_y_confirmar worker ────────────────────────────────────────
+
+def _esperar_archivo_worker(
+    nombre_archivo: str,
+    carpeta: str,
+    comando: str,
+    intervalo: float = 7.0,
+    umbral: int = 60,
+) -> None:
+    """Corre en hilo daemon. Busca el archivo, pide confirmación HUD, ejecuta si acepta."""
+    from rapidfuzz import fuzz  # noqa: PLC0415
+    from hud_control import preguntar_hud, esperar_respuesta_hud  # noqa: PLC0415
+
+    carpeta_map = {
+        "descargas":  _get_descargas,
+        "escritorio": _get_escritorio,
+        "documentos": _get_documentos,
+    }
+    resolver = carpeta_map.get(carpeta, _get_descargas)
+
+    print(f"{_ts()}[archivo-watcher] iniciando — buscando '{nombre_archivo}' en {carpeta}")
+    while True:
+        try:
+            carpeta_path = resolver()
+            try:
+                entradas = list(os.scandir(carpeta_path))
+            except OSError:
+                entradas = []
+
+            mejor_score = 0
+            mejor_ruta  = ""
+            for e in entradas:
+                if not e.is_file():
+                    continue
+                score = fuzz.partial_ratio(nombre_archivo.lower(), e.name.lower())
+                if score > mejor_score:
+                    mejor_score = score
+                    mejor_ruta  = e.path
+
+            if mejor_score >= umbral:
+                print(f"{_ts()}[archivo-watcher] encontrado '{Path(mejor_ruta).name}' (score={mejor_score})")
+                pregunta_id = preguntar_hud(
+                    f"Encontré {Path(mejor_ruta).name}. ¿Lo ejecuto?",
+                    {"1": "Sí", "2": "No"},
+                )
+                print(f"{_ts()}[archivo-watcher] pregunta enviada al HUD (id={pregunta_id})")
+                respuesta = esperar_respuesta_hud(pregunta_id)
+                print(f"{_ts()}[archivo-watcher] respuesta HUD: {respuesta!r}")
+                if respuesta == "1":
+                    codigo_real = comando.replace("{ruta}", repr(mejor_ruta))
+                    print(f"{_ts()}[archivo-watcher] ejecutando: {codigo_real}")
+                    try:
+                        exec(codigo_real, _build_exec_ns())  # noqa: S102
+                        print(f"{_ts()}[archivo-watcher] ejecución completada")
+                    except Exception as exc:
+                        print(f"{_ts()}[archivo-watcher] error al ejecutar: {exc}")
+                else:
+                    print(f"{_ts()}[archivo-watcher] usuario rechazó la ejecución")
+                return
+        except Exception as exc:
+            print(f"{_ts()}[archivo-watcher] error en ciclo: {exc}")
+
+        time.sleep(intervalo)
 
 
 # ── Modo agente ────────────────────────────────────────────────────────────────
@@ -1022,7 +1223,10 @@ def _humanizar_plan(pasos: list[dict]) -> str:
                         "hacer de forma conversacional y fluida — como si se lo explicaras a un amigo, no como "
                         "si leyeras un menú. No uses números, no uses corchetes, no menciones nombres técnicos "
                         "de herramientas (ejecutar_accion, enviar_whatsapp, etc.). Si hay varios pasos similares, "
-                        "agrúpalos naturalmente. Termina siempre con '¿Procedo?'. Máximo 2-3 oraciones."
+                        "agrúpalos naturalmente. Termina con una pregunta de confirmación natural, "
+                        "eligiendo UNA de estas variantes (varía, no uses siempre la misma): "
+                        "'¿Procedo?', '¿Te parece si sigo?', '¿Avanzo con esto?', '¿Doy luz verde?', '¿Seguimos?'. "
+                        "Máximo 2-3 oraciones."
                     ),
                 },
                 {"role": "user", "content": pasos_texto},
@@ -1090,7 +1294,7 @@ class Orchestrator:
                 return False
 
             resumen = _humanizar_plan(self.plan)
-            _reproducir_oracion(resumen)
+            _hablar_stem(resumen)
 
             if _cancelado():
                 return False
@@ -1106,9 +1310,9 @@ class Orchestrator:
             if not respuesta_texto:
                 silencios_consecutivos += 1
                 if silencios_consecutivos >= 2:
-                    _reproducir_oracion("Cuando quieras me decís si procedo o si querés cambiar algo.")
+                    _hablar_stem("Cuando quieras me decís si procedo o si querés cambiar algo.")
                 else:
-                    _reproducir_oracion("No te escuché bien, ¿procedo o cambiás algo?")
+                    _hablar_stem("No te escuché bien, ¿procedo o cambiás algo?")
                 continue
             silencios_consecutivos = 0  # reset al recibir respuesta
 
@@ -1116,7 +1320,7 @@ class Orchestrator:
                 return True
 
             if _es_cancelacion(respuesta_texto):
-                _reproducir_oracion("Entendido, cancelado.")
+                _hablar_stem("Entendido, cancelado.")
                 return False
 
             # Corrección en lenguaje natural — BUG 3: validar antes de replannear
@@ -1126,15 +1330,15 @@ class Orchestrator:
                 print(f"{_ts()}[orchestrator] corrección no reconocida (confusión #{confusiones_seguidas})")
                 # MEJORA 6 — escalar mensaje según confusiones acumuladas
                 if confusiones_seguidas >= 3:
-                    _reproducir_oracion("Está bien, avísame cuando quieras que lo haga.")
+                    _hablar_stem("Está bien, avísame cuando quieras que lo haga.")
                     return False
                 if confusiones_seguidas >= 2:
-                    _reproducir_oracion(
+                    _hablar_stem(
                         "No estoy entendiendo bien qué querés cambiar. "
                         "Podés decirme de nuevo con otras palabras, o decime 'cancela' para empezar de nuevo."
                     )
                 else:
-                    _reproducir_oracion("Perdona, no entendí bien. ¿Querés que proceda con el plan o cambiás algo?")
+                    _hablar_stem("Perdona, no entendí bien. ¿Querés que proceda con el plan o cambiás algo?")
                 continue
             confusiones_seguidas = 0  # reset si la corrección tiene sentido
 
@@ -1146,10 +1350,10 @@ class Orchestrator:
                 for p in self.plan:
                     print(f"  {p.get('paso', '?')}. [{p.get('accion', '')}] {p.get('descripcion', '')}")
             else:
-                _reproducir_oracion("No pude ajustar el plan, ¿procedemos con el original?")
+                _hablar_stem("No pude ajustar el plan, ¿procedemos con el original?")
 
         # MEJORA 5 — mensaje natural al agotar intentos
-        _reproducir_oracion("Está bien, avísame cuando quieras que lo haga.")
+        _hablar_stem("Está bien, avísame cuando quieras que lo haga.")
         return False
 
     def autorizar(self, tool_name: str, descripcion_corta: str) -> bool:
@@ -1223,9 +1427,33 @@ def _capturar_y_transcribir(audio_q: _stdlib_queue.Queue, rec: object) -> str:
     if not audio_bytes:
         return ""
     try:
-        return transcribir_whisper(audio_bytes)
+        print(f"{_ts()}[diag] audio entregado a Whisper ({len(audio_bytes)} bytes)")
+        resultado = transcribir_whisper(audio_bytes)
+        print(f"{_ts()}[diag] Whisper devolvió: '{resultado}'")
+        return resultado
     except Exception:
         return ""
+
+
+def _escuchar_interrupcion(audio_q: _stdlib_queue.Queue, rec: object, mi_turno_id: int) -> None:
+    """Escucha Vosk mientras TTS reproduce. Activa barge-in al detectar 2+ palabras."""
+    while _turno_id[0] == mi_turno_id and not _barge_in.is_set():
+        if not _tts_reproduciendo.is_set():
+            time.sleep(0.05)
+            continue
+        try:
+            data = audio_q.get(timeout=0.1)
+        except _stdlib_queue.Empty:
+            continue
+        if rec.AcceptWaveform(data):
+            texto_oido = json.loads(rec.Result()).get("text", "").strip()
+        else:
+            texto_oido = json.loads(rec.PartialResult()).get("partial", "").strip()
+        if len(texto_oido.split()) >= 2:
+            print(f"{_ts()}[ia] [INTERRUPCIÓN] barge-in detectado: '{texto_oido}'")
+            _interrumpir_tts.set()
+            _barge_in.set()
+            return
 
 
 def _ejecutar_turno(
@@ -1235,11 +1463,19 @@ def _ejecutar_turno(
     rec: object,
 ) -> str:
     """Loop interno de rondas GPT para un turno de la sesión.
-    Modifica messages in-place. Devuelve 'continuar', 'cerrar' o 'error'."""
+    Modifica messages in-place. Devuelve 'continuar', 'cerrar', 'barge_in' o 'error'."""
     orchestrator: Orchestrator | None = None
     _bloqueos_gk = 0
     _tool_choice: object = {"type": "function", "function": {"name": "declarar_plan"}}
     MAX_RONDAS = 12
+
+    _barge_in.clear()
+    _turno_id[0] += 1
+    threading.Thread(
+        target=_escuchar_interrupcion,
+        args=(audio_q, rec, _turno_id[0]),
+        daemon=True,
+    ).start()
 
     for ronda in range(MAX_RONDAS):
         if _cancelado():
@@ -1247,15 +1483,26 @@ def _ejecutar_turno(
                 orchestrator.reporte_final()
             return "error"
 
+        if _barge_in.is_set():
+            print(f"{_ts()}[ia] [INTERRUPCIÓN] turno abortado por barge-in")
+            if orchestrator:
+                orchestrator.reporte_final()
+            return "barge_in"
+
         _hud_set_estado("procesando", ronda=ronda + 1, max_rondas=MAX_RONDAS)
         print(f"{_ts()}[ia] GPT-4o-mini ronda {ronda + 1}...")
+        def _safe_msg_preview(m) -> dict:
+            role    = m.get("role")    if isinstance(m, dict) else getattr(m, "role",    "?")
+            content = m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
+            return {"role": role, "content": str(content or "")[:80]}
+        print(f"{_ts()}[diag] messages[-3:] = {[_safe_msg_preview(m) for m in messages[-3:]]}")
         try:
             resp = _client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=messages,
                 tools=_TOOLS,
                 tool_choice=_tool_choice,
-                max_tokens=400,
+                max_tokens=1000,
                 parallel_tool_calls=False,
             )
         except Exception as exc:
@@ -1271,7 +1518,16 @@ def _ejecutar_turno(
 
         tool_call = resp.choices[0].message.tool_calls[0]
         tool_name = tool_call.function.name
-        args      = json.loads(tool_call.function.arguments)
+        try:
+            args = json.loads(tool_call.function.arguments)
+        except json.JSONDecodeError as e:
+            print(f"{_ts()}[ia] JSON truncado en tool_call ({tool_name}): {e}")
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": json.dumps({"error": "respuesta truncada, reintentá con menos contenido"}, ensure_ascii=False),
+            })
+            continue
         print(f"{_ts()}[ia] tool: {tool_name}")
 
         messages.append(resp.choices[0].message)
@@ -1424,6 +1680,26 @@ def _ejecutar_turno(
             })
             continue
 
+        if tool_name == "esperar_archivo_y_confirmar":
+            nombre  = args.get("nombre_archivo", "")
+            carpeta = args.get("carpeta", "descargas")
+            comando = args.get("comando_al_confirmar", "")
+            print(f"{_ts()}[ia] esperar_archivo: '{nombre}' en {carpeta}")
+            threading.Thread(
+                target=_esperar_archivo_worker,
+                args=(nombre, carpeta, comando),
+                daemon=True,
+            ).start()
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": json.dumps(
+                    {"exito": True, "mensaje": "Monitoreo iniciado en segundo plano"},
+                    ensure_ascii=False,
+                ),
+            })
+            continue
+
     if orchestrator:
         orchestrator.reporte_final()
     print(f"{_ts()}[ia] agotó rondas sin acción final")
@@ -1460,6 +1736,7 @@ def sesion_inteligente(audio_q: _stdlib_queue.Queue, rec: object) -> None:
                 break
             _hud_set_tx(texto)
         else:
+            print(f"{_ts()}[diag] inicio captura input turno {turno + 1}")
             print(f"{_ts()}[ia] di tu pregunta...")
             texto = _capturar_y_transcribir(audio_q, rec)
             if not texto:
