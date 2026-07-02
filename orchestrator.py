@@ -118,11 +118,12 @@ def _correccion_tiene_sentido(plan_actual: list[dict], correccion: str) -> bool:
 
 
 class Orchestrator:
-    def __init__(self, plan: list[dict], peticion_original: str) -> None:
+    def __init__(self, plan: list[dict], peticion_original: str, resumen_natural: str = "") -> None:
         self.plan = plan
         self.peticion_original = peticion_original
         self.paso_actual = 0
         self.desviaciones: list[str] = []
+        self.resumen_natural = resumen_natural
 
     def confirmar_con_usuario(self, audio_q: _stdlib_queue.Queue, rec: object) -> bool:
         # BUG 1 — si el plan es solo conversacional, no hace falta confirmar
@@ -138,7 +139,11 @@ class Orchestrator:
             if _cancelado():
                 return False
 
-            resumen = _humanizar_plan(self.plan)
+            if intento == 0 and self.resumen_natural:
+                print(f"{_ts()}[orchestrator] usando resumen_natural del plan (sin llamada extra a GPT)")
+                resumen = self.resumen_natural
+            else:
+                resumen = _humanizar_plan(self.plan)
             _hablar_stem(resumen)
 
             if _cancelado():

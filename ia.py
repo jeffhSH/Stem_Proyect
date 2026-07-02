@@ -65,7 +65,9 @@ _TOOLS_SYSTEM = (
     "CIERRE DE SESIÓN: cuando el usuario se despida ('chau', 'hasta luego', "
     "'gracias eso era todo', 'nos vemos', etc.), respondé con una despedida breve "
     "y natural usando responder_en_voz con cerrar_sesion=true. Nunca cierres "
-    "abruptamente sin contestar. "
+    "abruptamente sin contestar. Para despedidas, dejá 'respuesta_directa' VACÍA "
+    "en declarar_plan — el cierre de sesión solo puede hacerse con "
+    "responder_en_voz y cerrar_sesion=true, respuesta_directa nunca cierra la sesión. "
     "Siempre usa una tool, nunca respondas texto directo."
 )
 
@@ -82,7 +84,7 @@ from stt import (  # noqa: E402
     precargar_whisper,
     transcribir_whisper,
 )
-from orchestrator import Orchestrator  # noqa: E402
+from orchestrator import Orchestrator, _requiere_confirmacion  # noqa: E402
 
 
 MAX_BLOQUEOS_GATEKEEPER = 2
@@ -242,7 +244,21 @@ def _ejecutar_turno(
             for p in plan:
                 print(f"  {p.get('paso','?')}. [{p.get('accion','')}] {p.get('descripcion','')}")
 
-            orchestrator = Orchestrator(plan, texto)
+            respuesta_directa = (args.get("respuesta_directa") or "").strip()
+            if respuesta_directa and not _requiere_confirmacion(plan):
+                print(f"{_ts()}[ia] respuesta directa en declarar_plan (sin ronda 2): '{respuesta_directa}'")
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": json.dumps({"confirmado": True, "respondido": True}, ensure_ascii=False),
+                })
+                _hud_set_estado("hablando")
+                hablar_edge(respuesta_directa)
+                messages.append({"role": "assistant", "content": respuesta_directa})
+                return "continuar"
+
+            resumen_natural = (args.get("resumen_natural") or "").strip()
+            orchestrator = Orchestrator(plan, texto, resumen_natural=resumen_natural)
 
             if not orchestrator.confirmar_con_usuario(audio_q, rec):
                 messages.append({
@@ -276,7 +292,13 @@ def _ejecutar_turno(
         if tool_name == "responder_en_voz":
             respuesta = args.get("texto", "")
             cerrar = bool(args.get("cerrar_sesion", False))
-            if _bloqueos_gk < MAX_BLOQUEOS_GATEKEEPER and _quedan_pendientes(texto, messages):
+            _gatekeeper_aplica = (
+                _requiere_confirmacion(orchestrator.plan)
+                and orchestrator.paso_actual < len(orchestrator.plan)
+            )
+            if not _gatekeeper_aplica:
+                print(f"{_ts()}[ia] gatekeeper: omitido (plan conversacional o pasos ya autorizados)")
+            if _gatekeeper_aplica and _bloqueos_gk < MAX_BLOQUEOS_GATEKEEPER and _quedan_pendientes(texto, messages):
                 _bloqueos_gk += 1
                 print(
                     f"{_ts()}[ia] gatekeeper: cierre prematuro detectado "

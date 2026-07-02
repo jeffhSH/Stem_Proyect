@@ -21,10 +21,35 @@ os.environ["STEM_DEBUG_TEXTO"] = "1"
 import ia       # noqa: E402
 import whatsapp # noqa: E402
 
+# ── Compat shim ──────────────────────────────────────────────────────────────
+# decidir_y_actuar fue reemplazado por _ejecutar_turno cuando se introdujo el
+# Orchestrator (ia.py ya no lo expone). Arma un messages[] de un solo turno y
+# llama al loop actual para no tocar el resto del test.
+def _decidir_y_actuar_compat(texto, audio_q, rec):
+    messages = [
+        {"role": "system", "content": f"{ia._TOOLS_SYSTEM}\n\n{ia._get_rutas_contexto()}"},
+        {"role": "user", "content": texto},
+    ]
+    return ia._ejecutar_turno(messages, texto, audio_q, rec)
+
+ia.decidir_y_actuar = _decidir_y_actuar_compat
+
+# Orchestrator.confirmar_con_usuario() usa input() en modo debug (no existía
+# cuando se escribió este test) — auto-confirmar como el resto de las funciones
+# de confirmación mockeadas abajo.
+import builtins  # noqa: E402
+builtins.input = lambda *a, **kw: "si"
+
 # ── Patches ────────────────────────────────────────────────────────────────────
 ia._escuchar_confirmacion_debug = lambda: "si"
 ia.hablar_edge         = lambda texto, *a, **kw: print(f"   [TTS] {texto}")
 ia._reproducir_oracion = lambda texto: print(f"   [TTS-oracion] {texto}")
+
+# orchestrator.confirmar_con_usuario() llama _hablar_stem() (Cartesia real) para
+# el "¿procedo?" — no existía cuando se escribió este test. Mockear para no
+# reproducir audio real ~7-10s por cada acción.
+import orchestrator as _orch  # noqa: E402
+_orch._hablar_stem = lambda texto, *a, **kw: print(f"   [TTS-confirm] {texto}")
 
 # Stub WA — firma nueva: enviar_whatsapp(envios: list[dict])
 _wa_calls_this_test: list[dict] = []
@@ -97,6 +122,33 @@ def _mock_ejecutar(descripcion, codigo, audio_q, rec, youtube_query=None):
     return True
 
 ia._ejecutar_con_verificacion = _mock_ejecutar
+
+# El camino real de "ejecutar_accion"/"buscar_y_abrir_youtube" ya no pasa por
+# ia._ejecutar_con_verificacion (eso es del modo agente legacy) — pasa por
+# tools.filesystem._ejecutar_silencioso y tools.youtube._abrir_en_brave desde
+# el refactor a tools/. Sin mockear esto, exec() correría código real en el
+# filesystem y se abriría Brave de verdad.
+import tools.filesystem as _tf  # noqa: E402
+import tools.youtube as _ty     # noqa: E402
+
+def _mock_ejecutar_silencioso(descripcion, codigo, youtube_query=None):
+    global _exec_nodos_this_test
+    if youtube_query:
+        print(f"   [YT-MOCK] búsqueda: {youtube_query}")
+    else:
+        print(f"   [EXEC-MOCK] {descripcion}")
+    _exec_nodos_this_test += 1
+    return True
+
+_tf._ejecutar_silencioso = _mock_ejecutar_silencioso
+
+def _mock_abrir_en_brave(youtube_query):
+    global _exec_nodos_this_test
+    print(f"   [YT-MOCK] búsqueda: {youtube_query}")
+    _exec_nodos_this_test += 1
+    return True
+
+_ty._abrir_en_brave = _mock_abrir_en_brave
 
 # ── Vocabularios ───────────────────────────────────────────────────────────────
 CONTACTOS = [
