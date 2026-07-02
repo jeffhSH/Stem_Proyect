@@ -347,6 +347,162 @@ def _ejecutar_turno(
     return "error"
 
 
+_MARCADOR_RESUMEN = "Resumen de turnos anteriores:"
+_MSG_GATEKEEPER = "Faltan acciones por completar. Revisá la petición original y ejecutá las que faltan."
+
+
+def _msg_role(m) -> str:
+    return m.get("role") if isinstance(m, dict) else getattr(m, "role", "?")
+
+
+def _msg_content(m):
+    return m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
+
+
+def _msg_tool_calls(m):
+    return m.get("tool_calls") if isinstance(m, dict) else getattr(m, "tool_calls", None)
+
+
+def _es_tool_pendiente(m) -> bool:
+    """True si m es un mensaje role=='tool' cuyo content (JSON) tiene 'pendiente': true.
+    Fail-safe: cualquier problema de parseo devuelve False (nunca fusiona turnos reales)."""
+    if not isinstance(m, dict) or m.get("role") != "tool":
+        return False
+    try:
+        data = json.loads(m.get("content") or "")
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return isinstance(data, dict) and data.get("pendiente") is True
+
+
+def _describir_bloque_turno(bloque: list) -> str:
+    """Genera una descripción breve y legible de un bloque de turno viejo, para el resumen."""
+    peticion = ""
+    for m in bloque:
+        if _msg_role(m) == "user":
+            peticion = str(_msg_content(m) or "").strip()
+            break
+
+    acciones: list[str] = []
+    for m in bloque:
+        if _msg_role(m) != "assistant":
+            continue
+        for tc in (_msg_tool_calls(m) or []):
+            func = tc.get("function") if isinstance(tc, dict) else getattr(tc, "function", None)
+            nombre = func.get("name") if isinstance(func, dict) else getattr(func, "name", None)
+            if nombre and nombre not in acciones:
+                acciones.append(nombre)
+
+    quedo_pendiente = (
+        len(bloque) >= 2
+        and _msg_role(bloque[-1]) == "user"
+        and str(_msg_content(bloque[-1]) or "") == _MSG_GATEKEEPER
+        and _es_tool_pendiente(bloque[-2])
+    )
+
+    linea = f"- Usuario pidió: \"{peticion[:150]}\""
+    if acciones:
+        linea += f"; acciones ejecutadas: {', '.join(acciones)}"
+    if quedo_pendiente:
+        linea += " (acción quedó pendiente sin resolver)"
+    return linea
+
+
+def _recortar_historial(messages: list, max_turnos_recientes: int = 8) -> list:
+    """Ventana deslizante sobre el historial de sesion_inteligente: si hay más de
+    max_turnos_recientes turnos completos, resume los viejos en un solo mensaje system
+    y conserva intactos los últimos max_turnos_recientes. Evita reenviar a GPT un
+    historial que crece sin límite durante la sesión.
+
+    Un 'turno' arranca en un mensaje role=='user' que sea una petición real del usuario
+    (agregada por sesion_inteligente), no el mensaje sintético que inyecta el gatekeeper
+    (líneas ~315-318 de _ejecutar_turno). Ese sintético SIEMPRE está precedido por un
+    mensaje role=='tool' con 'pendiente': true en su JSON — se usa esa marca para
+    distinguirlos de forma determinística."""
+    if not messages or not isinstance(messages[0], dict) or messages[0].get("role") != "system":
+        return messages
+
+    system_base = messages[0]
+    idx = 1
+    resumen_previo = ""
+    if (
+        len(messages) > 1
+        and isinstance(messages[1], dict)
+        and messages[1].get("role") == "system"
+        and str(messages[1].get("content", "")).startswith(_MARCADOR_RESUMEN)
+    ):
+        resumen_previo = str(messages[1].get("content", ""))
+        idx = 2
+
+    resto = messages[idx:]
+
+    turn_blocks: list[list] = []
+    for i, m in enumerate(resto):
+        prev = resto[i - 1] if i > 0 else None
+        es_inicio_turno = _msg_role(m) == "user" and (prev is None or not _es_tool_pendiente(prev))
+        if es_inicio_turno or not turn_blocks:
+            turn_blocks.append([])
+        turn_blocks[-1].append(m)
+
+    if len(turn_blocks) <= max_turnos_recientes:
+        return messages
+
+    bloques_viejos = turn_blocks[: len(turn_blocks) - max_turnos_recientes]
+    bloques_recientes = turn_blocks[-max_turnos_recientes:]
+
+    lineas_viejas = [_describir_bloque_turno(b) for b in bloques_viejos]
+
+    try:
+        system_prompt = (
+            "Sos un asistente que resume turnos pasados de una conversación con un "
+            "asistente de voz para PC, en español, sin jerga técnica (no menciones "
+            "nombres de funciones ni herramientas internas). Generá una línea breve "
+            "por turno en formato de lista, describiendo qué pidió el usuario y qué se "
+            "hizo. Si un turno indica que quedó una acción pendiente sin resolver, "
+            "mencionalo explícitamente. Sé conciso."
+        )
+        user_content = "Turnos a resumir:\n" + "\n".join(lineas_viejas)
+        if resumen_previo:
+            resumen_previo_limpio = resumen_previo[len(_MARCADOR_RESUMEN):].strip()
+            user_content = (
+                f"Resumen previo de turnos ya resumidos anteriormente:\n{resumen_previo_limpio}\n\n"
+                f"{user_content}\n\n"
+                "Integrá el resumen previo con los turnos nuevos en un solo resumen actualizado."
+            )
+        resp = _client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            max_tokens=200,
+            temperature=0,
+        )
+        contenido_resumen = (resp.choices[0].message.content or "").strip()
+        if not contenido_resumen:
+            raise ValueError("resumen vacío")
+    except Exception as exc:
+        print(f"{_ts()}[ia] error al resumir historial via GPT, fallback a concatenación: {exc}")
+        partes = []
+        if resumen_previo:
+            partes.append(resumen_previo[len(_MARCADOR_RESUMEN):].strip())
+        partes.extend(lineas_viejas)
+        contenido_resumen = "\n".join(partes)
+
+    texto_resumen = f"{_MARCADOR_RESUMEN} {contenido_resumen}"
+
+    nuevos_messages = [system_base, {"role": "system", "content": texto_resumen}]
+    for bloque in bloques_recientes:
+        nuevos_messages.extend(bloque)
+
+    print(
+        f"{_ts()}[ia] recorte de historial: {len(bloques_viejos)} turno(s) resumidos, "
+        f"{len(bloques_recientes)} turno(s) recientes conservados"
+    )
+
+    return nuevos_messages
+
+
 def sesion_inteligente(audio_q: _stdlib_queue.Queue, rec: object) -> None:
     """Sesión conversacional continua: un solo historial acumulado por activación de Stem.
     GPT recibe el contexto completo en cada turno y decide naturalmente cuándo cerrar."""
@@ -361,6 +517,8 @@ def sesion_inteligente(audio_q: _stdlib_queue.Queue, rec: object) -> None:
     for turno in range(MAX_TURNOS):
         if _cancelado():
             break
+
+        messages = _recortar_historial(messages)
 
         _hud_set_estado("procesando")
         print(f"{_ts()}[ia] [turno {turno + 1}/{MAX_TURNOS}] esperando input...")

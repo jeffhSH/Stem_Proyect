@@ -27,9 +27,14 @@ Vosk model must be downloaded and placed at `vosk-model-small-es-0.42/` in the p
 
 There is no lint/build/CI tooling in this repo (no `pyproject.toml`, no test runner config) — it's a set of plain scripts.
 
-### Tests — currently stale
+### Tests
 
-`test_agente_nodos.py`, `test_diag_oversending.py`, and `test_falsopositivo.py` all call `ia.decidir_y_actuar(...)`, a function that no longer exists in `ia.py` (the tool loop is now `sesion_inteligente()` / `_ejecutar_turno()`, introduced with the Orchestrator). These scripts will raise `AttributeError` as-is — don't assume they run. `test_wa.py` is a standalone Selenium/WhatsApp smoke script with no `ia.py` dependency and is runnable on its own.
+`test_agente_nodos.py`, `test_diag_oversending.py`, and `test_falsopositivo.py` all originally called `ia.decidir_y_actuar(...)`, a function that no longer exists in `ia.py` (the tool loop is now `sesion_inteligente()` / `_ejecutar_turno()`, introduced with the Orchestrator).
+
+- `test_agente_nodos.py` and `test_falsopositivo.py` have since had a compatibility shim added (`ia.decidir_y_actuar = _decidir_y_actuar_compat`, near the top of each file) that builds a one-turn `messages[]` and calls `ia._ejecutar_turno()` directly — they run and make real GPT calls (no mocking), so a full run is slow and costs API usage. Spot-checked subsets pass (3/3 and 3/4 on reduced samples as of the history-window change below); the one observed failure in `test_falsopositivo.py` was a model-level over-sending false positive unrelated to any code change, which is the kind of case that test exists to catch.
+- `test_diag_oversending.py` has no such shim and still raises `AttributeError: module 'ia' has no attribute 'decidir_y_actuar'` as-is — the error is caught internally per case (script exits 0), so it looks like it "ran" but every case errors out. Don't assume this one runs; add the same shim pattern if it needs to work again.
+
+`test_wa.py` is a standalone Selenium/WhatsApp smoke script with no `ia.py` dependency and is runnable on its own.
 
 ## Architecture
 

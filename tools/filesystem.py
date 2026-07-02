@@ -370,8 +370,12 @@ def handle_ejecutar_accion(args: dict, ctx) -> dict:
     return {"exito": exito}
 
 
-def handle_explorar_carpeta(args: dict, ctx) -> list[str]:
+def handle_explorar_carpeta(args: dict, ctx) -> dict:
     carpeta  = args.get("carpeta", "")
     archivos = _listar_carpeta(carpeta)
-    print(f"{_ts()}[explorar] {carpeta}: {len(archivos)} archivos")
-    return archivos
+    total = len(archivos)
+    truncado = total > 40
+    if truncado:
+        archivos = archivos[:40]
+    print(f"{_ts()}[explorar] {carpeta}: {len(archivos)} archivos" + (f" (truncado de {total})" if truncado else ""))
+    return {"archivos": archivos, "total_archivos": total, "truncado": truncado}
