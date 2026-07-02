@@ -1,0 +1,1 @@
+{"nodes": [{"id": "stem_logo_animado_html", "label": "Stem Logo Animated Entry", "file_type": "image", "source_file": "stem_logo_animado.html"}], "edges": [{"source": "stem_logo_animado_html", "target": "claude_main_py", "relation": "conceptually_related_to", "confidence": "AMBIGUOUS", "confidence_score": 0.5, "source_file": "stem_logo_animado.html"}], "hyperedges": []}

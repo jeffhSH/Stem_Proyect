@@ -1,0 +1,1 @@
+{"nodes": [{"id": "stem_hud_final_html", "label": "Stem HUD Final UI Design", "file_type": "image", "source_file": "stem_hud_final.html"}], "edges": [{"source": "stem_hud_final_html", "target": "claude_hud_control_py", "relation": "conceptually_related_to", "confidence": "EXTRACTED", "confidence_score": 1.0, "source_file": "stem_hud_final.html"}], "hyperedges": []}

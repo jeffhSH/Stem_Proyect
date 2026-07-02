@@ -141,3 +141,13 @@ STEM_DEBUG_TEXTO=1           # optional: skip mic, use text input
 ### Audio device setup (Windows, one-time)
 
 Stem requests 16000 Hz from `sounddevice.RawInputStream` (`voz.py`/`training.py`) regardless of the device's native rate; per `DEPLOY.md` the input device must be set to 48000 Hz in `mmsys.cpl` → Recording → Properties → Advanced so WASAPI resamples correctly. Also set `mmsys.cpl` → Communications → "Do nothing" to stop Windows from ducking playback volume on detected speech. Bluetooth headsets switch to the HFP profile on mic use, degrading playback audio — no software fix; prefer a laptop's built-in mic or a wired/USB-dongle device. Full checklist in `DEPLOY.md`.
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
