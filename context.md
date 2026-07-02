@@ -86,6 +86,37 @@ Optimizaciones de descripción TTS:
 - _ejecutar_con_verificacion ahora usa descripcion=args.get("descripcion") directo para el TTS de confirmación
 - Resultado: sin regex parsing, descripción siempre en lenguaje natural correcto
 
+TTS — migrado a Cartesia (commit cartesia-tts, mergeado a main):
+
+- Voz principal: Cartesia API, voz Mateo, modelo sonic-3.5, voice ID 2fc4f1ec-bfd0-46f1-8e6d-d4279eaaf838
+- Fallback automático a Edge TTS si Cartesia falla o falta CARTESIA_API_KEY
+- hablar_edge() es el punto de entrada único, decide Cartesia vs Edge
+- _reproducir_oracion() (streaming de _tts_worker) sigue en Edge puro — no pasa por Cartesia
+- MAX_RONDAS subido a 12 (desde 6)
+
+Orchestrator — IMPLEMENTADO (declarar_plan → confirmar → ejecutar):
+
+- GPT declara plan completo antes de ejecutar (tool declarar_plan)
+- _humanizar_plan(): llamada extra a GPT-4o-mini que convierte pasos técnicos en frase natural terminando en variante de "¿Procedo?"
+- Orchestrator.confirmar_con_usuario(): loop de hasta 3 refinamientos, detecta silencios consecutivos, corrección en lenguaje natural, replanning
+- _PALABRAS_SI incluye "procede", "dale", "ok", "adelante", etc. — _escuchar_confirmacion() (legacy, usado por _ejecutar_con_verificacion) NO las incluye, solo reconoce sí/no/cancelar — inconsistencia pendiente de unificar
+- Orchestrator.autorizar() por paso, reporte_final() al cerrar turno
+
+Barge-in — IMPLEMENTADO (interrupción por voz mientras Stem habla):
+
+- _interrumpir_tts (Event) + _tts_reproduciendo (Event) + _turno_id para invalidar hilos de escucha viejos
+- _escuchar_interrupcion() corre en threading.Thread paralelo a hablar_edge(), detecta 2+ palabras del usuario y corta con sd.stop()
+- Reproducción no bloqueante centralizada, reemplazó el patrón sd.play()+sd.wait() en las 3 funciones que sintetizan audio
+- Sin lógica anti-eco (usuario trabaja con auriculares)
+
+HUD visual — IMPLEMENTADO, bidireccional:
+
+- hud_control.py / hud_window.py: overlay Tkinter always-on-top, proceso aparte (subprocess), poll de stem_hud_state.json cada 80ms
+- Estados: idle / procesando / hablando, con ecualizador animado y transcripción en vivo
+- Canal de confirmación sí/no desde el HUD: preguntar_hud() / esperar_respuesta_hud() / responder_pregunta_hud() (escritura atómica a stem_hud_respuesta.json)
+- Botón × para cerrar, cerrar_hud() mata el proceso por PID — pero lanzar_hud() NO mata huérfanos antes de lanzar uno nuevo (bug conocido, fix propuesto: llamar cerrar_hud() al inicio de lanzar_hud())
+- esperar_archivo_y_confirmar (tool nueva): watcher en background (rapidfuzz, umbral 60%, polling cada 7s) que activa el HUD y pide confirmación al encontrar un archivo (ej. instalador descargado)
+
 WhatsApp vía Selenium — COMPLETO:
 
 - whatsapp.py — módulo independiente con enviar_whatsapp(contacto, mensaje) y enviar_archivo_whatsapp(contacto, ruta_archivo)
@@ -115,14 +146,24 @@ Test de precisión (test_agente_nodos.py):
 - 3 fallos: GPT invocaba _get_descargas()/_get_documentos() inexistentes → NameError → agotaban MAX_RONDAS
 - Bug corregido: helpers añadidos a _build_exec_ns() en commit a03db6d
 
-Pendiente Fase 2:
+EN PROGRESO — 2 ramas activas en paralelo (desde main, sin archivos compartidos):
 
+Rama `hud-frontend`:
+- Input de texto en el HUD que se manda directo a GPT (bypasea audio/Whisper para ese turno) — canal atómico stem_hud_input.json, mismo patrón que preguntar_hud/responder_pregunta_hud
+- Animación fluida: eliminar flicker de hud_window.py (canvas.delete("all")+recrear en cada tick de 16ms) manteniendo referencias a item_id y usando canvas.coords()/itemconfig()
+- Intento previo con DeepSeek V4 Flash no aplicó los cambios correctamente (10m33s, resultado sin efecto visible) — descartado sin commitear, retomar con Claude Code
+
+Rama `comprimir-temporizadores`:
+- Tool comprimir_archivo / descomprimir_archivo (zipfile/shutil, con confirmación vía Orchestrator)
+- Tool crear_temporizador (threading.Timer, al vencer llama hablar_edge())
+
+Pendiente Fase 2 (sin rama asignada aún):
 - Recordatorios
 - Mensajes programados
-- Comprimir/descomprimir archivos
-- Indicador visual (overlay/notificación) de Stem activo
 - Protección contra alucinaciones/falsos positivos de GPT en el tool loop
 - Pre-cargar modelo Whisper al arranque (eliminar carga en frío ~8s primera vez)
+- Fix lanzar_hud(): matar proceso HUD huérfano antes de lanzar uno nuevo
+- Unificar _escuchar_confirmacion() (legacy) con _PALABRAS_SI/_PALABRAS_NO para reconocer "procede"/"dale"/etc. igual que el Orchestrator
 
 Instrucciones para Claude
 

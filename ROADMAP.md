@@ -48,15 +48,23 @@ Edge TTS (responde por voz, streaming por oraciones)
   - Singleton driver, perfil dedicado Stem_WA, buscador interno sin recargar página
   - Manejo del diálogo nativo de Windows al adjuntar archivos
 - Test de precisión: 50 pruebas dinámicas (2–4 nodos), resultado ~94% (47/50 exitosas)
+- TTS migrado a Cartesia (voz Mateo, sonic-3.5) con fallback a Edge TTS — rama cartesia-tts mergeada
+- Orchestrator: declarar_plan → humanizar → confirmar_con_usuario → autorizar por paso → reporte_final
+- Barge-in: interrupción por voz mientras Stem habla, reproducción no bloqueante, threading.Event + _turno_id
+- HUD visual bidireccional (Tkinter, subprocess, poll 80ms) con confirmación sí/no desde la UI
+- Tool esperar_archivo_y_confirmar: watcher en background (rapidfuzz, umbral 60%) que activa el HUD al encontrar un archivo
+
+**En progreso — 2 ramas paralelas desde main**
+- Rama `hud-frontend`: input de texto en el HUD → GPT (bypasea audio), animación sin flicker (canvas.coords/itemconfig en vez de delete+recrear)
+- Rama `comprimir-temporizadores`: tools comprimir_archivo/descomprimir_archivo y crear_temporizador
 
 **Pendiente**
 - Recordatorios
 - Mensajes programados
-- Comprimir/descomprimir archivos
-- Indicador visual (overlay/notificación) de Stem activo durante procesamiento IA
 - Protección contra alucinaciones/falsos positivos de GPT en el tool loop
 - Pre-cargar modelo Whisper al arranque (eliminar carga en frío ~8s primera vez)
-- Optimizar humanización del plan del Orchestrator: la implementación actual hace una llamada extra a GPT-4o-mini para convertir la lista de pasos en lenguaje natural, lo que agrega latencia perceptible antes de que Stem hable el plan. Evaluar alternativas: plantillas locales con f-strings (sin llamada a GPT), o mover la humanización a una llamada en paralelo mientras se inicializa el Orchestrator. Objetivo: que el plan humanizado esté listo para hablar sin delay adicional respecto al flujo anterior.
+- Fix lanzar_hud(): no mata procesos HUD huérfanos antes de lanzar uno nuevo
+- Unificar _escuchar_confirmacion() (legacy) con el set _PALABRAS_SI/_PALABRAS_NO del Orchestrator
 
 ---
 
