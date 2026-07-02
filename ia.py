@@ -1,9 +1,7 @@
-import asyncio
 import base64
 import io
 import json
 import os
-import re
 import queue as _stdlib_queue
 import subprocess
 import threading
@@ -12,56 +10,21 @@ import webbrowser
 from datetime import datetime
 from pathlib import Path
 
-import edge_tts
-import miniaudio
-import numpy as np
-import sounddevice as sd
-from dotenv import load_dotenv
-from faster_whisper import WhisperModel
-from openai import OpenAI
-
-load_dotenv(Path(__file__).parent / ".env")
-
-try:
-    from hud_control import set_estado as _hud_set_estado, set_transcripcion as _hud_set_tx
-except ImportError:
-    def _hud_set_estado(*a, **kw): pass   # noqa: E704
-    def _hud_set_tx(*a): pass             # noqa: E704
-
-_client             = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-_modelo_whisper: WhisperModel | None = None
-_whisper_lock       = threading.Lock()
-_SENTENCE_END       = frozenset(".?!")
-_tts_ya_reproducido = threading.Event()
-_interrumpir_tts    = threading.Event()
-_tts_reproduciendo  = threading.Event()
-_barge_in           = threading.Event()
-_turno_id           = [0]
-
-# ── Cartesia TTS ───────────────────────────────────────────────────────────────
-_CARTESIA_VOICE_ID = "2fc4f1ec-bfd0-46f1-8e6d-d4279eaaf838"
-_CARTESIA_MODEL    = "sonic-3.5"
-try:
-    from cartesia import Cartesia as _CartesiaClient
-    _cartesia_client = (
-        _CartesiaClient(api_key=os.getenv("CARTESIA_API_KEY"))
-        if os.getenv("CARTESIA_API_KEY")
-        else None
-    )
-except ImportError:
-    _cartesia_client = None
-
-VOICE = "es-MX-JorgeNeural"
-
-DEBUG_TEXTO = os.getenv("STEM_DEBUG_TEXTO", "1") == "1"  # default True (modo texto)
-
-
-def toggle_modo_entrada() -> None:
-    global DEBUG_TEXTO
-    DEBUG_TEXTO = not DEBUG_TEXTO
-    modo = "TEXTO (debug)" if DEBUG_TEXTO else "VOZ"
-    print(f"[stem] modo de entrada → {modo}")
-_cancelar   = threading.Event()
+import ia_state
+from ia_state import (
+    DEBUG_TEXTO,
+    _barge_in,
+    _cancelado,
+    _cancelar,
+    _client,
+    _hud_set_estado,
+    _hud_set_tx,
+    _interrumpir_tts,
+    _ts,
+    _tts_reproduciendo,
+    _turno_id,
+    toggle_modo_entrada,
+)
 
 _MAX_INTENTOS_AGENTE = 3
 
@@ -357,339 +320,17 @@ _TOOLS = [
 ]
 
 
-def _cancelado() -> bool:
-    return _cancelar.is_set()
-
-
-def _ts() -> str:
-    now = datetime.now()
-    return f"[{now.strftime('%H:%M:%S')}.{now.microsecond // 1000:03d}]"
-
-
-# ── Faster-Whisper ─────────────────────────────────────────────────────────────
-
-def _get_modelo() -> WhisperModel:
-    global _modelo_whisper
-    if _modelo_whisper is None:
-        with _whisper_lock:
-            if _modelo_whisper is None:
-                print(f"{_ts()}[ia] cargando Faster-Whisper base (int8)...")
-                _modelo_whisper = WhisperModel(
-                    "base",
-                    device="cpu",
-                    compute_type="int8",
-                    cpu_threads=6,
-                    num_workers=1,
-                )
-                print(f"{_ts()}[ia] modelo listo")
-    return _modelo_whisper
-
-
-def precargar_whisper() -> None:
-    """Lanza _get_modelo() en hilo daemon para evitar carga en frío (~8s) en primer uso."""
-    threading.Thread(target=_get_modelo, daemon=True).start()
-
-
-def transcribir_whisper(audio_bytes: bytes) -> str:
-    """Transcribe audio raw int16 bytes con Faster-Whisper. Retorna el texto."""
-    arr = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-    arr = np.clip(arr * 2.5, -1.0, 1.0)  # amplificación 150%
-    arr = np.ascontiguousarray(arr)
-    segments, _ = _get_modelo().transcribe(
-        arr,
-        language="es",
-        beam_size=1,
-        best_of=1,
-        vad_filter=True,
-        vad_parameters=dict(min_silence_duration_ms=300, threshold=0.3),
-        condition_on_previous_text=False,
-        word_timestamps=False,
-    )
-    return " ".join(seg.text for seg in segments).strip()
-
-
-# ── Audio helpers (compartidos por modo IA y modo agente) ──────────────────────
-
-def _drenar_audio(audio_q: _stdlib_queue.Queue) -> None:
-    while not audio_q.empty():
-        try:
-            audio_q.get_nowait()
-        except _stdlib_queue.Empty:
-            break
-
-
-def _capturar_audio(audio_q: _stdlib_queue.Queue, rec: object, timeout: float = 8.0) -> bytes:
-    """Captura audio esperando 900ms de silencio sostenido tras inicio de habla, o timeout absoluto."""
-    SILENCIO_CORTE = 0.9
-    chunks: list[bytes] = []
-    rec.Reset()
-    t_fin = time.time() + timeout
-    hablando = False
-    t_ultimo_texto = 0.0
-
-    while time.time() < t_fin:
-        try:
-            data = audio_q.get(timeout=0.1)
-        except _stdlib_queue.Empty:
-            if hablando and (time.time() - t_ultimo_texto) >= SILENCIO_CORTE:
-                break
-            continue
-        chunks.append(data)
-        if rec.AcceptWaveform(data):
-            result_text = json.loads(rec.Result()).get("text", "").strip()
-            if result_text:
-                hablando = True
-                t_ultimo_texto = time.time()
-        else:
-            partial = json.loads(rec.PartialResult()).get("partial", "").strip()
-            if partial:
-                hablando = True
-                t_ultimo_texto = time.time()
-        if hablando and (time.time() - t_ultimo_texto) >= SILENCIO_CORTE:
-            break
-
-    rec.Reset()
-    return b"".join(chunks)
-
-
-def _escuchar_confirmacion(audio_q: _stdlib_queue.Queue, rec: object) -> str:
-    """
-    Escucha 8 s con Vosk. Retorna 'si', 'no' o 'cancelar'.
-    Timeout → 'cancelar'.
-    """
-    _drenar_audio(audio_q)
-    rec.Reset()
-    t_fin = time.time() + 8.0
-    while time.time() < t_fin:
-        if _cancelado():
-            rec.Reset()
-            return "cancelar"
-        try:
-            data = audio_q.get(timeout=max(0.1, t_fin - time.time()))
-        except _stdlib_queue.Empty:
-            break
-        if rec.AcceptWaveform(data):
-            texto = json.loads(rec.Result()).get("text", "").lower().strip()
-        else:
-            texto = json.loads(rec.PartialResult()).get("partial", "").lower().strip()
-        if not texto:
-            continue
-        print(f"{_ts()}[agente] confirmación: '{texto}'")
-        palabras = set(_normalizar_respuesta(texto).split())
-        if palabras & _PALABRAS_NO:
-            rec.Reset()
-            return "cancelar"
-        if palabras & _PALABRAS_SI:
-            rec.Reset()
-            return "si"
-    print(f"{_ts()}[agente] timeout sin confirmación → cancelar")
-    rec.Reset()
-    return "cancelar"
-
-
-# ── Edge TTS streaming ─────────────────────────────────────────────────────────
-
-async def _tts_bytes_async(texto: str) -> bytes:
-    """Recolecta bytes de audio MP3 desde el stream de Edge TTS."""
-    chunks: list[bytes] = []
-    async for chunk in edge_tts.Communicate(texto, voice=VOICE).stream():
-        if chunk["type"] == "audio":
-            chunks.append(chunk["data"])
-    return b"".join(chunks)
-
-
-def _reproducir_audio(samples: np.ndarray, sample_rate: int) -> None:
-    """Reproducción interrompible vía barge-in. `_interrumpir_tts` activo → sd.stop() inmediato."""
-    _interrumpir_tts.clear()
-    _tts_reproduciendo.set()
-    try:
-        sd.play(samples, sample_rate)
-        while True:
-            if _interrumpir_tts.wait(timeout=0.05):
-                sd.stop()
-                print(f"{_ts()}[ia] [INTERRUPCIÓN] audio cortado por barge-in")
-                return
-            try:
-                activo = sd.get_stream().active
-            except Exception:
-                break
-            if not activo:
-                break
-    finally:
-        _tts_reproduciendo.clear()
-
-
-def _reproducir_oracion(texto: str) -> None:
-    """Sintetiza una oración con Edge TTS streaming y la reproduce bloqueando hasta el fin."""
-    print(f"{_ts()}[ia] oración → TTS: '{texto}'")
-    try:
-        audio_bytes = asyncio.run(_tts_bytes_async(texto))
-        if not audio_bytes:
-            return
-        decoded = miniaudio.decode(
-            audio_bytes,
-            output_format=miniaudio.SampleFormat.SIGNED16,
-            nchannels=1,
-            sample_rate=24000,
-        )
-        samples = np.frombuffer(bytes(decoded.samples), dtype=np.int16)
-        print(f"{_ts()}[ia] TTS reproduciendo...")
-        _reproducir_audio(samples, decoded.sample_rate)
-        print(f"{_ts()}[ia] fin TTS oración")
-    except Exception as exc:
-        print(f"{_ts()}[ia] TTS error en oración: {exc}")
-
-
-def _hablar_stem(texto: str) -> None:
-    """TTS para el Orchestrator: Cartesia (Mateo) si disponible, Edge TTS si no."""
-    if _cartesia_client is not None:
-        _hablar_cartesia(texto)
-    else:
-        _hablar_edge_original(texto)
-
-
-def _tts_worker(q: _stdlib_queue.Queue) -> None:
-    """Consume oraciones de la cola y las reproduce secuencialmente."""
-    while True:
-        item = q.get()
-        if item is None:
-            q.task_done()
-            return
-        if _interrumpir_tts.is_set():
-            print(f"{_ts()}[ia] [INTERRUPCIÓN] oración descartada por barge-in")
-            q.task_done()
-        else:
-            _reproducir_oracion(item)
-            q.task_done()
-
-
-def _flush_oraciones(buffer: str, tts_q: _stdlib_queue.Queue) -> str:
-    """Extrae todas las oraciones completas del buffer y las encola para TTS."""
-    while True:
-        for i, ch in enumerate(buffer):
-            if ch in _SENTENCE_END and i > 0:
-                oracion = buffer[: i + 1].strip()
-                buffer  = buffer[i + 1 :].lstrip()
-                if oracion:
-                    tts_q.put(oracion)
-                break
-        else:
-            break
-    return buffer
-
-
-# ── Pipeline GPT → TTS ────────────────────────────────────────────────────────
-
-def consultar_gpt(texto: str) -> str:
-    """
-    Streams GPT-4o-mini y envía cada oración completa al TTS en cuanto se detecta,
-    sin esperar que GPT termine. Retorna el texto completo una vez que el TTS finalizó.
-    """
-    stream = _client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "Eres Stem, asistente de escritorio por voz en Windows. "
-                    "Responde en español, de forma breve y directa, en máximo 2 oraciones."
-                ),
-            },
-            {"role": "user", "content": texto},
-        ],
-        max_tokens=80,
-        stream=True,
-    )
-
-    tts_q: _stdlib_queue.Queue = _stdlib_queue.Queue()
-    worker = threading.Thread(target=_tts_worker, args=(tts_q,), daemon=True)
-    worker.start()
-
-    buffer    = ""
-    full_text = ""
-
-    for chunk in stream:
-        token      = chunk.choices[0].delta.content or ""
-        buffer    += token
-        full_text += token
-        buffer     = _flush_oraciones(buffer, tts_q)
-
-    if buffer.strip():
-        tts_q.put(buffer.strip())
-
-    tts_q.put(None)
-    tts_q.join()
-    worker.join()
-
-    _tts_ya_reproducido.set()
-    return full_text.strip()
-
-
-def _hablar_edge_original(texto: str) -> None:
-    """Sintetiza y reproduce texto con Edge TTS. Fallback cuando Cartesia no está disponible."""
-    print(f"{_ts()}[ia] inicio TTS Edge (sintetizando...)")
-    try:
-        audio_bytes = asyncio.run(_tts_bytes_async(texto))
-        decoded = miniaudio.decode(
-            audio_bytes,
-            output_format=miniaudio.SampleFormat.SIGNED16,
-            nchannels=1,
-            sample_rate=24000,
-        )
-        samples = np.frombuffer(bytes(decoded.samples), dtype=np.int16)
-        print(f"{_ts()}[ia] TTS Edge reproduciendo...")
-        _reproducir_audio(samples, decoded.sample_rate)
-        print(f"{_ts()}[ia] fin TTS Edge")
-    except Exception as exc:
-        print(f"{_ts()}[ia] TTS Edge error: {exc}")
-
-
-def _hablar_cartesia(texto: str) -> None:
-    """Sintetiza y reproduce texto con Cartesia (voz Mateo). Fallback a Edge TTS si falla."""
-    print(f"{_ts()}[ia] inicio TTS Cartesia (sintetizando...)")
-    try:
-        audio_bytes = b"".join(
-            _cartesia_client.tts.bytes(
-                model_id=_CARTESIA_MODEL,
-                transcript=texto,
-                voice={"mode": "id", "id": _CARTESIA_VOICE_ID},
-                language="es",
-                output_format={
-                    "container": "wav",
-                    "encoding": "pcm_s16le",
-                    "sample_rate": 44100,
-                },
-            )
-        )
-        decoded = miniaudio.decode(
-            audio_bytes,
-            output_format=miniaudio.SampleFormat.SIGNED16,
-            nchannels=1,
-            sample_rate=44100,
-        )
-        samples = np.frombuffer(bytes(decoded.samples), dtype=np.int16)
-        print(f"{_ts()}[ia] TTS Cartesia reproduciendo...")
-        _reproducir_audio(samples, decoded.sample_rate)
-        print(f"{_ts()}[ia] fin TTS Cartesia")
-    except Exception as exc:
-        print(f"{_ts()}[ia] error TTS Cartesia: {exc} — fallback a Edge TTS")
-        _hablar_edge_original(texto)
-
-
-def hablar_edge(texto: str) -> None:
-    """
-    Punto de entrada TTS principal. Usa Cartesia (Mateo) si CARTESIA_API_KEY está en .env,
-    Edge TTS (Jorge) como fallback. No-op si el audio ya fue reproducido en este turno.
-    """
-    if _tts_ya_reproducido.is_set():
-        _tts_ya_reproducido.clear()
-        return
-
-    if _cartesia_client is not None:
-        _hablar_cartesia(texto)
-    else:
-        _hablar_edge_original(texto)
-    print(f"{_ts()}[diag] TTS fin")
+from tts import hablar_edge, _reproducir_oracion  # noqa: E402
+from stt import (  # noqa: E402
+    _capturar_audio,
+    _capturar_y_transcribir,
+    _drenar_audio,
+    _escuchar_confirmacion,
+    _escuchar_confirmacion_debug,
+    precargar_whisper,
+    transcribir_whisper,
+)
+from orchestrator import Orchestrator  # noqa: E402
 
 
 # ── esperar_archivo_y_confirmar worker ────────────────────────────────────────
@@ -961,20 +602,6 @@ def _buscar_youtube(query: str) -> str | None:
         return None
 
 
-def _escuchar_confirmacion_debug() -> str:
-    try:
-        resp = input("[DEBUG] ¿Procedo? (s/n/esc): ").strip().lower()
-        if resp in ("s", "si", "sí", ""):
-            return "si"
-        if resp == "esc":
-            _cancelar.set()
-            return "cancelar"
-        return "no"
-    except (EOFError, KeyboardInterrupt):
-        _cancelar.set()
-        return "cancelar"
-
-
 _LOG_DIR  = os.path.join(os.path.dirname(__file__), "logs")
 _LOG_PATH = os.path.join(_LOG_DIR, "agente_errores.log")
 
@@ -1020,7 +647,7 @@ def _ejecutar_con_verificacion(
     if _cancelado():
         return False
 
-    if DEBUG_TEXTO:
+    if ia_state.DEBUG_TEXTO:
         confirmacion = _escuchar_confirmacion_debug()
     else:
         confirmacion = _escuchar_confirmacion(audio_q, rec)
@@ -1129,275 +756,6 @@ def _quedan_pendientes(peticion_original: str, messages: list) -> bool:
         return False
 
 
-TOOLS_CONVERSACIONALES: frozenset[str] = frozenset({"responder_en_voz"})
-
-_PALABRAS_SI = {"sí", "si", "dale", "ok", "procede", "adelante", "perfecto", "correcto", "listo", "va", "claro"}
-_PALABRAS_NO = {"no", "cancela", "cancelar", "para", "detén", "detente", "stop", "olvídalo", "olvida"}
-
-
-def _requiere_confirmacion(plan: list[dict]) -> bool:
-    """Devuelve False si todos los pasos son solo conversacionales (no necesitan confirmación)."""
-    return not all(p.get("accion") in TOOLS_CONVERSACIONALES for p in plan)
-
-
-def _normalizar_respuesta(texto: str) -> str:
-    """NFKD + elimina puntuación + lowercase. Permite comparar sin acentos ni signos."""
-    import unicodedata
-    sin_acentos = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode()
-    return re.sub(r"[^\w\s]", "", sin_acentos).lower().strip()
-
-
-def _es_confirmacion(texto: str) -> bool:
-    palabras = set(_normalizar_respuesta(texto).split())
-    return bool(palabras & _PALABRAS_SI) and not bool(palabras & _PALABRAS_NO)
-
-
-def _es_cancelacion(texto: str) -> bool:
-    palabras = set(_normalizar_respuesta(texto).split())
-    return bool(palabras & _PALABRAS_NO)
-
-
-def _transcribir_respuesta(audio_q: _stdlib_queue.Queue, rec: object) -> str:
-    """Captura audio libre y lo transcribe con Whisper. Devuelve texto vacío en silencio/error."""
-    _drenar_audio(audio_q)
-    audio_bytes = _capturar_audio(audio_q, rec, timeout=8.0)
-    if not audio_bytes:
-        return ""
-    try:
-        return transcribir_whisper(audio_bytes)
-    except Exception:
-        return ""
-
-
-def _replannear(peticion_actualizada: str) -> list[dict]:
-    """Genera un plan revisado con GPT a partir de petición original + corrección del usuario."""
-    try:
-        resp = _client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Eres Stem. El usuario quiere modificar el plan de acciones. "
-                        "Genera un plan revisado en formato JSON con esta estructura exacta: "
-                        '[{"paso": 1, "accion": "nombre_tool", "descripcion": "descripción breve en español"}, ...]. '
-                        "Las tools disponibles son: ejecutar_accion, enviar_whatsapp, "
-                        "enviar_archivo_whatsapp, buscar_y_abrir_youtube, explorar_carpeta, responder_en_voz. "
-                        "Respondé SOLO con el JSON, sin texto extra ni backticks."
-                    ),
-                },
-                {"role": "user", "content": peticion_actualizada},
-            ],
-            max_tokens=300,
-            temperature=0,
-        )
-        raw = resp.choices[0].message.content.strip()
-        # quitar posibles backticks de markdown si GPT los incluye
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        return json.loads(raw)
-    except Exception as exc:
-        print(f"{_ts()}[orchestrator] _replannear error: {exc}")
-        return []
-
-
-def _humanizar_plan(pasos: list[dict]) -> str:
-    """Convierte la lista de pasos del plan en una frase natural en español vía GPT.
-    Fallback: lista numerada clásica si GPT falla."""
-    fallback_lineas = [f"{p.get('paso', i+1)}. {p.get('descripcion', '')}" for i, p in enumerate(pasos)]
-    fallback = "Haré lo siguiente: " + ", ".join(fallback_lineas) + ". ¿Procedo?"
-    try:
-        pasos_texto = "\n".join(
-            f"{p.get('paso', i+1)}. [{p.get('accion', '')}] {p.get('descripcion', '')}"
-            for i, p in enumerate(pasos)
-        )
-        resp = _client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Eres Stem, un asistente de voz personal. El usuario acaba de hacer una petición "
-                        "y vas a ejecutar un plan de acciones. Convierte la siguiente lista de pasos técnicos "
-                        "en UNA sola frase natural en español, en primera persona, que explique lo que vas a "
-                        "hacer de forma conversacional y fluida — como si se lo explicaras a un amigo, no como "
-                        "si leyeras un menú. No uses números, no uses corchetes, no menciones nombres técnicos "
-                        "de herramientas (ejecutar_accion, enviar_whatsapp, etc.). Si hay varios pasos similares, "
-                        "agrúpalos naturalmente. Termina con una pregunta de confirmación natural, "
-                        "eligiendo UNA de estas variantes (varía, no uses siempre la misma): "
-                        "'¿Procedo?', '¿Te parece si sigo?', '¿Avanzo con esto?', '¿Doy luz verde?', '¿Seguimos?'. "
-                        "Máximo 2-3 oraciones."
-                    ),
-                },
-                {"role": "user", "content": pasos_texto},
-            ],
-            max_tokens=120,
-            temperature=0.4,
-        )
-        resultado = resp.choices[0].message.content.strip()
-        if resultado:
-            return resultado
-    except Exception as exc:
-        print(f"{_ts()}[orchestrator] _humanizar_plan error: {exc}")
-    return fallback
-
-
-def _correccion_tiene_sentido(plan_actual: list[dict], correccion: str) -> bool:
-    """Pregunta a GPT (max_tokens=5) si la corrección del usuario tiene sentido para ajustar el plan."""
-    try:
-        pasos_txt = "; ".join(
-            f"{p.get('paso', i+1)}. {p.get('descripcion', '')}"
-            for i, p in enumerate(plan_actual)
-        )
-        resp = _client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Eres un validador. El usuario tiene este plan: "
-                        f"[{pasos_txt}]. "
-                        "¿La corrección del usuario tiene sentido como modificación al plan? "
-                        "Responde SOLO 'SÍ' o 'NO'."
-                    ),
-                },
-                {"role": "user", "content": correccion},
-            ],
-            max_tokens=5,
-            temperature=0,
-        )
-        answer = resp.choices[0].message.content.strip().upper()
-        return answer.startswith("SÍ") or answer.startswith("SI")
-    except Exception:
-        return True  # en caso de error, asumir que tiene sentido y dejar pasar
-
-
-class Orchestrator:
-    def __init__(self, plan: list[dict], peticion_original: str) -> None:
-        self.plan = plan
-        self.peticion_original = peticion_original
-        self.paso_actual = 0
-        self.desviaciones: list[str] = []
-
-    def confirmar_con_usuario(self, audio_q: _stdlib_queue.Queue, rec: object) -> bool:
-        # BUG 1 — si el plan es solo conversacional, no hace falta confirmar
-        if not _requiere_confirmacion(self.plan):
-            return True
-
-        MAX_REFINAMIENTOS = 3
-        plan_context = self.peticion_original
-        silencios_consecutivos = 0   # BUG 4
-        confusiones_seguidas = 0     # MEJORA 6
-
-        for intento in range(MAX_REFINAMIENTOS):
-            if _cancelado():
-                return False
-
-            resumen = _humanizar_plan(self.plan)
-            _hablar_stem(resumen)
-
-            if _cancelado():
-                return False
-
-            if DEBUG_TEXTO:
-                respuesta_texto = input("[DEBUG] respuesta (sí / no / corrección): ").strip()
-            else:
-                respuesta_texto = _transcribir_respuesta(audio_q, rec)
-
-            print(f"{_ts()}[orchestrator] respuesta intento {intento + 1}: '{respuesta_texto}'")
-
-            # BUG 4 — silencios consecutivos
-            if not respuesta_texto:
-                silencios_consecutivos += 1
-                if silencios_consecutivos >= 2:
-                    _hablar_stem("Cuando quieras me decís si procedo o si querés cambiar algo.")
-                else:
-                    _hablar_stem("No te escuché bien, ¿procedo o cambiás algo?")
-                continue
-            silencios_consecutivos = 0  # reset al recibir respuesta
-
-            if _es_confirmacion(respuesta_texto):
-                return True
-
-            if _es_cancelacion(respuesta_texto):
-                _hablar_stem("Entendido, cancelado.")
-                return False
-
-            # Corrección en lenguaje natural — BUG 3: validar antes de replannear
-            print(f"{_ts()}[orchestrator] corrección recibida: '{respuesta_texto}'")
-            if not _correccion_tiene_sentido(self.plan, respuesta_texto):
-                confusiones_seguidas += 1
-                print(f"{_ts()}[orchestrator] corrección no reconocida (confusión #{confusiones_seguidas})")
-                # MEJORA 6 — escalar mensaje según confusiones acumuladas
-                if confusiones_seguidas >= 3:
-                    _hablar_stem("Está bien, avísame cuando quieras que lo haga.")
-                    return False
-                if confusiones_seguidas >= 2:
-                    _hablar_stem(
-                        "No estoy entendiendo bien qué querés cambiar. "
-                        "Podés decirme de nuevo con otras palabras, o decime 'cancela' para empezar de nuevo."
-                    )
-                else:
-                    _hablar_stem("Perdona, no entendí bien. ¿Querés que proceda con el plan o cambiás algo?")
-                continue
-            confusiones_seguidas = 0  # reset si la corrección tiene sentido
-
-            plan_context = f"{plan_context}. Corrección del usuario: {respuesta_texto}"
-            nuevo_plan = _replannear(plan_context)
-            if nuevo_plan:
-                self.plan = nuevo_plan
-                print(f"{_ts()}[orchestrator] plan revisado: {len(self.plan)} paso(s)")
-                for p in self.plan:
-                    print(f"  {p.get('paso', '?')}. [{p.get('accion', '')}] {p.get('descripcion', '')}")
-            else:
-                _hablar_stem("No pude ajustar el plan, ¿procedemos con el original?")
-
-        # MEJORA 5 — mensaje natural al agotar intentos
-        _hablar_stem("Está bien, avísame cuando quieras que lo haga.")
-        return False
-
-    def autorizar(self, tool_name: str, descripcion_corta: str) -> bool:
-        # explorar_carpeta es un paso de soporte transparente — nunca cuenta como desviación
-        if tool_name == "explorar_carpeta":
-            return True
-
-        if self.paso_actual >= len(self.plan):
-            self._registrar_desviacion(
-                f"paso extra no declarado: {tool_name} — {descripcion_corta}"
-            )
-            self.paso_actual += 1
-            return True  # permisivo en v1
-
-        paso_esperado = self.plan[self.paso_actual]
-        if tool_name != paso_esperado["accion"]:
-            self._registrar_desviacion(
-                f"paso {self.paso_actual + 1}: esperaba '{paso_esperado['accion']}' "
-                f"pero GPT llama '{tool_name}' ({descripcion_corta})"
-            )
-        self.paso_actual += 1
-        return True
-
-    def _registrar_desviacion(self, msg: str) -> None:
-        print(f"{_ts()}[orchestrator] ⚠ desviación: {msg}")
-        self.desviaciones.append(msg)
-
-    def reporte_final(self) -> None:
-        completados = self.paso_actual
-        total = len(self.plan)
-        if self.desviaciones:
-            print(
-                f"{_ts()}[orchestrator] plan: {completados}/{total} pasos | "
-                f"{len(self.desviaciones)} desviación(es):"
-            )
-            for d in self.desviaciones:
-                print(f"  - {d}")
-        else:
-            print(
-                f"{_ts()}[orchestrator] plan completado sin desviaciones "
-                f"({completados}/{total} pasos)"
-            )
-
-
 def _get_rutas_contexto() -> str:
     """Resuelve rutas reales del usuario via Registry (OneDrive-safe)."""
     try:
@@ -1418,21 +776,6 @@ def _get_rutas_contexto() -> str:
         f"- Documentos: {documentos}\n"
         "Usa SIEMPRE estas rutas exactas como destino, nunca las inventes."
     )
-
-
-def _capturar_y_transcribir(audio_q: _stdlib_queue.Queue, rec: object) -> str:
-    """Captura audio y transcribe con Faster-Whisper. Devuelve '' en silencio/error."""
-    from voz import _capturar_audio_ia  # noqa: PLC0415
-    audio_bytes = _capturar_audio_ia(audio_q, rec)
-    if not audio_bytes:
-        return ""
-    try:
-        print(f"{_ts()}[diag] audio entregado a Whisper ({len(audio_bytes)} bytes)")
-        resultado = transcribir_whisper(audio_bytes)
-        print(f"{_ts()}[diag] Whisper devolvió: '{resultado}'")
-        return resultado
-    except Exception:
-        return ""
 
 
 def _escuchar_interrupcion(audio_q: _stdlib_queue.Queue, rec: object, mi_turno_id: int) -> None:
@@ -1726,7 +1069,7 @@ def sesion_inteligente(audio_q: _stdlib_queue.Queue, rec: object) -> None:
         _hud_set_estado("procesando")
         print(f"{_ts()}[ia] [turno {turno + 1}/{MAX_TURNOS}] esperando input...")
 
-        if DEBUG_TEXTO:
+        if ia_state.DEBUG_TEXTO:
             print(f"{_ts()}[ia] di tu pregunta (debug)...")
             try:
                 texto = input("[DEBUG] escribe tu pregunta: ").strip()
