@@ -6,7 +6,7 @@ declarar_plan y responder_en_voz no tienen handle acá: su ejecución tiene
 flujo especial (confirmación de plan, gatekeeper de cierre) y vive en
 ia.py::_ejecutar_turno.
 """
-from . import esperar_archivo, filesystem, plan, whatsapp_tools, youtube
+from . import compresion, esperar_archivo, filesystem, plan, whatsapp_tools, youtube
 from .context import ToolContext
 
 TOOL_HANDLERS = {
@@ -16,6 +16,8 @@ TOOL_HANDLERS = {
     "esperar_archivo_y_confirmar":  esperar_archivo.handle,
     "enviar_whatsapp":              whatsapp_tools.handle_enviar_whatsapp,
     "enviar_archivo_whatsapp":      whatsapp_tools.handle_enviar_archivo_whatsapp,
+    "comprimir_archivos":           compresion.handle_comprimir_archivos,
+    "descomprimir_archivo":         compresion.handle_descomprimir_archivo,
 }
 
 SCHEMA_DECLARAR_PLAN = plan.build_schema_declarar_plan(
@@ -31,4 +33,6 @@ TOOL_SCHEMAS = [
     esperar_archivo.SCHEMA,
     whatsapp_tools.SCHEMA_ENVIAR_WHATSAPP,
     whatsapp_tools.SCHEMA_ENVIAR_ARCHIVO_WHATSAPP,
+    compresion.SCHEMA_COMPRIMIR_ARCHIVOS,
+    compresion.SCHEMA_DESCOMPRIMIR_ARCHIVO,
 ]

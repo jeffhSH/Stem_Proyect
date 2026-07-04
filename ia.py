@@ -64,6 +64,8 @@ _TOOLS_SYSTEM = (
     "REGLA DE DEPENDENCIAS: antes de ejecutar una acción verificá si depende "
     "de otra aún no realizada (enviar depende de haber creado, leer depende de "
     "haber descomprimido). Si hay dependencia pendiente, resuélvela primero. "
+    "comprimir_archivos requiere que los archivos ya existan; descomprimir_archivo "
+    "requiere que el .zip ya exista o haya sido creado en un paso previo. "
     "REGLA DE TAREAS MÚLTIPLES: si el usuario pidió varias acciones, completar "
     "una (envío, creación, búsqueda, o cualquier otra tool) NO es señal de "
     "cierre — identificá TODAS las acciones pedidas y ejecutalas antes de "
