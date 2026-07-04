@@ -342,7 +342,7 @@ def _ejecutar_turno(
 
         handler = tools.TOOL_HANDLERS.get(tool_name)
         if handler is not None:
-            ctx = ToolContext(audio_q=audio_q, rec=rec, orchestrator=orchestrator)
+            ctx = ToolContext(audio_q=audio_q, rec=rec, orchestrator=orchestrator, peticion_original=texto)
             resultado = handler(args, ctx)
             messages.append({
                 "role":         "tool",

@@ -332,7 +332,8 @@ def generar_peticion(i: int) -> tuple[str, int]:
         else:
             txt = (f"Crea {noms[0]}{exts[0]} en {d0} con '{conts[0]}', "
                    f"crea {noms[1]}{exts[1]} en {d1} con '{conts[1]}', "
-                   f"envíaselos a {cons[0]} y {cons[1]} como archivos, "
+                   f"envíale {noms[0]}{exts[0]} a {cons[0]} y {noms[1]}{exts[1]} a {cons[1]} "
+                   f"como archivos por WhatsApp, "
                    f"y envíales también mensajes: a {cons[2]}: '{msgs[0]}' "
                    f"y a {cons[3]}: '{msgs[1]}'")
 

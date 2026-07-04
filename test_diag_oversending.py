@@ -18,10 +18,33 @@ os.environ["STEM_DEBUG_TEXTO"] = "1"
 import ia       # noqa: E402
 import whatsapp # noqa: E402
 
+# ── Compat shim ──────────────────────────────────────────────────────────────
+# decidir_y_actuar fue reemplazado por _ejecutar_turno cuando se introdujo el
+# Orchestrator (ia.py ya no lo expone). Arma un messages[] de un solo turno y
+# llama al loop actual para no tocar el resto del test. Mismo patrón que
+# test_agente_nodos.py.
+def _decidir_y_actuar_compat(texto, audio_q, rec):
+    messages = [
+        {"role": "system", "content": f"{ia._TOOLS_SYSTEM}\n\n{ia._get_rutas_contexto()}"},
+        {"role": "user", "content": texto},
+    ]
+    return ia._ejecutar_turno(messages, texto, audio_q, rec)
+
+ia.decidir_y_actuar = _decidir_y_actuar_compat
+
+# Orchestrator.confirmar_con_usuario() usa input() en modo debug — auto-confirmar.
+import builtins  # noqa: E402
+builtins.input = lambda *a, **kw: "si"
+
 # ── Patches ─────────────────────────────────────────────────────────────────
 ia._escuchar_confirmacion_debug = lambda: "si"
 ia.hablar_edge         = lambda texto, *a, **kw: print(f"   [TTS] {texto}")
 ia._reproducir_oracion = lambda texto: print(f"   [TTS-oracion] {texto}")
+
+# orchestrator.confirmar_con_usuario() llama _hablar_stem() (Cartesia real) para
+# el "¿procedo?" — mockear para no reproducir audio real ~7-10s por cada acción.
+import orchestrator as _orch  # noqa: E402
+_orch._hablar_stem = lambda texto, *a, **kw: print(f"   [TTS-confirm] {texto}")
 
 _wa_calls: list[dict] = []
 
@@ -31,9 +54,13 @@ def _stub_enviar_whatsapp(envios: list[dict]) -> bool:
     return True
 
 def _stub_enviar_archivo_whatsapp(envios: list[dict]) -> bool:
+    # Schema actual (tools/whatsapp_tools.py): un item por par (contacto, archivo) —
+    # 'archivo' es un string, no una lista 'archivos'. El stub previo leía la clave
+    # equivocada y por eso WA-files daba 0 siempre, incluso sin el AttributeError.
     for e in envios:
         contacto = e.get("contacto", "")
-        for ruta in e.get("archivos", []):
+        ruta = e.get("archivo", "")
+        if ruta:
             _wa_calls.append({"type": "file", "contacto": contacto, "ruta": ruta})
             print(f"   [WA-FILE] {contacto}: {ruta}")
     return True
@@ -115,7 +142,8 @@ def generar_peticion(i: int) -> tuple[str, int]:
         else:
             txt = (f"Crea {noms[0]}{exts[0]} en {d0} con '{conts[0]}', "
                    f"crea {noms[1]}{exts[1]} en {d1} con '{conts[1]}', "
-                   f"envíaselos a {cons[0]} y {cons[1]} como archivos, "
+                   f"envíale {noms[0]}{exts[0]} a {cons[0]} y {noms[1]}{exts[1]} a {cons[1]} "
+                   f"como archivos por WhatsApp, "
                    f"y envíales también mensajes: a {cons[2]}: '{msgs[0]}' "
                    f"y a {cons[3]}: '{msgs[1]}'")
     else:
@@ -127,9 +155,17 @@ CASOS = [15, 17, 21, 25, 27, 29]  # → tests 16, 18, 22, 26, 28, 30
 _DUMMY_REC = type("DummyRec", (), {"Reset": lambda self: None})()
 _DUMMY_Q   = queue.Queue()
 
+# Conteo esperado de archivos/mensajes por categoría (ver generar_peticion):
+# cat 0 y 1: 2 archivos (a cons[0], cons[1]) + 1 mensaje (a cons[2])
+# cat 2:     0 archivos + 3 mensajes (a cons[0], cons[1], cons[2])
+# cat 3:     2 archivos (a cons[0], cons[1]) + 2 mensajes (a cons[2], cons[3])
+_ESPERADO_POR_CAT = {0: (2, 1), 1: (2, 1), 2: (0, 3), 3: (2, 2)}
+
 print(f"\n{'='*70}")
 print("DIAGNÓSTICO OVER-SENDING — 6 casos con JSON RAW de enviar_archivo_whatsapp")
 print(f"{'='*70}\n")
+
+_ok_count = 0
 
 for i in CASOS:
     texto, nodos_esp = generar_peticion(i)
@@ -147,7 +183,17 @@ for i in CASOS:
 
     wa_files = [c for c in _wa_calls if c["type"] == "file"]
     wa_msgs  = [c for c in _wa_calls if c["type"] == "msg"]
-    print(f"  RESULTADO: WA-files={len(wa_files)}, WA-msgs={len(wa_msgs)}, rondas={_rondas}")
+    esp_files, esp_msgs = _ESPERADO_POR_CAT[i % 4]
+    over_sending = len(wa_files) > esp_files or len(wa_msgs) > esp_msgs
+    ok = len(wa_files) == esp_files and len(wa_msgs) == esp_msgs
+    if ok:
+        _ok_count += 1
+    veredicto = "OK" if ok else ("OVER-SENDING" if over_sending else "FALTAN ENVIOS")
+    print(f"  RESULTADO: WA-files={len(wa_files)}, WA-msgs={len(wa_msgs)}, rondas={_rondas} "
+          f"(esperado: files={esp_files}, msgs={esp_msgs})")
+    print(f"  VEREDICTO: {veredicto}")
     time.sleep(0.3)
 
-print(f"\n{'='*70}\n")
+print(f"\n{'='*70}")
+print(f"RESUMEN: {_ok_count}/{len(CASOS)} sin over-sending ni envíos faltantes")
+print(f"{'='*70}\n")

@@ -18,3 +18,4 @@ class ToolContext:
     orchestrator: object = None
     hud_set_estado: Callable = _hud_set_estado
     hud_set_tx: Callable = _hud_set_tx
+    peticion_original: str = ""
