@@ -53,6 +53,11 @@ Edge TTS (responde por voz, streaming por oraciones)
 - Barge-in: interrupción por voz mientras Stem habla, reproducción no bloqueante, threading.Event + _turno_id
 - HUD visual bidireccional (Tkinter, subprocess, poll 80ms) con confirmación sí/no desde la UI
 - Tool esperar_archivo_y_confirmar: watcher en background (rapidfuzz, umbral 60%) que activa el HUD al encontrar un archivo
+- Fix de over-sending: causa real era ambigüedad en 2 prompts de test (no bug de código) — reescritos a forma explícita, `test_diag_oversending.py` 6/6. `_verificar_asignaciones()` (GPT-4o-mini, sin historial) queda como capa de seguridad extra para casos reales genuinamente ambiguos.
+- Cambios 1-4 de latencia: gatekeeper condicional, `respuesta_directa` y `resumen_natural` en `declarar_plan`, ventana deslizante de historial (`_recortar_historial`) + truncado de `explorar_carpeta` a 40 archivos.
+- Cambios A-D de precisión STT: silencio sostenido de 900ms en captura, normalización por pico en Whisper (reemplaza clip fijo 2.5×), `initial_prompt` de dominio + contactos cacheado, tolerancia a errores fonéticos en el system prompt.
+- Simplificación de confirmación de planes a 2 caminos (confirmar / corregir) + kill switch global "apágate" (fuzzy ≥85%, corta desde cualquier punto de la sesión). Únicas 2 formas de cerrar sesión: despedida y "apágate".
+- Tools `comprimir_archivos`/`descomprimir_archivo` (zipfile stdlib, protección zip-slip)
 
 **En progreso — 2 ramas paralelas desde main**
 - Rama `hud-frontend`: input de texto en el HUD → GPT (bypasea audio), animación sin flicker (canvas.coords/itemconfig en vez de delete+recrear)
