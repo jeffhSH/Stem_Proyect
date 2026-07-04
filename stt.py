@@ -9,6 +9,7 @@ import numpy as np
 from faster_whisper import WhisperModel
 
 from ia_state import _cancelado, _cancelar, _modelo_whisper, _ts, _whisper_lock
+from kill_switch import _activar_kill_switch, _es_apagate
 
 _PALABRAS_SI = {"sí", "si", "dale", "ok", "procede", "adelante", "perfecto", "correcto", "listo", "va", "claro"}
 _PALABRAS_NO = {"no", "cancela", "cancelar", "para", "detén", "detente", "stop", "olvídalo", "olvida"}
@@ -158,6 +159,10 @@ def _escuchar_confirmacion(audio_q: _stdlib_queue.Queue, rec: object) -> str:
             texto = json.loads(rec.PartialResult()).get("partial", "").lower().strip()
         if not texto:
             continue
+        if _es_apagate(texto):
+            _activar_kill_switch("_escuchar_confirmacion")
+            rec.Reset()
+            return "cancelar"
         print(f"{_ts()}[agente] confirmación: '{texto}'")
         palabras = set(_normalizar_respuesta(texto).split())
         if palabras & _PALABRAS_NO:
@@ -222,8 +227,3 @@ def _normalizar_respuesta(texto: str) -> str:
 def _es_confirmacion(texto: str) -> bool:
     palabras = set(_normalizar_respuesta(texto).split())
     return bool(palabras & _PALABRAS_SI) and not bool(palabras & _PALABRAS_NO)
-
-
-def _es_cancelacion(texto: str) -> bool:
-    palabras = set(_normalizar_respuesta(texto).split())
-    return bool(palabras & _PALABRAS_NO)

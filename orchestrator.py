@@ -3,8 +3,9 @@ import queue as _stdlib_queue
 
 import ia_state
 from ia_state import _cancelado, _client, _ts
+from kill_switch import _activar_kill_switch, _es_apagate
 from tts import _hablar_stem
-from stt import _es_cancelacion, _es_confirmacion, _transcribir_respuesta
+from stt import _es_confirmacion, _transcribir_respuesta
 
 TOOLS_CONVERSACIONALES: frozenset[str] = frozenset({"responder_en_voz"})
 
@@ -154,6 +155,11 @@ class Orchestrator:
             else:
                 respuesta_texto = _transcribir_respuesta(audio_q, rec)
 
+            if _es_apagate(respuesta_texto):
+                _activar_kill_switch("confirmar_con_usuario")
+                _hablar_stem("Apagándome.")
+                return False
+
             print(f"{_ts()}[orchestrator] respuesta intento {intento + 1}: '{respuesta_texto}'")
 
             # BUG 4 — silencios consecutivos
@@ -168,10 +174,6 @@ class Orchestrator:
 
             if _es_confirmacion(respuesta_texto):
                 return True
-
-            if _es_cancelacion(respuesta_texto):
-                _hablar_stem("Entendido, cancelado.")
-                return False
 
             # Corrección en lenguaje natural — BUG 3: validar antes de replannear
             print(f"{_ts()}[orchestrator] corrección recibida: '{respuesta_texto}'")

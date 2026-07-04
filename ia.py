@@ -21,6 +21,7 @@ from ia_state import (
 )
 
 import tools
+from kill_switch import _activar_kill_switch, _es_apagate
 from tools.context import ToolContext
 from tools.filesystem import _ejecutar_con_verificacion, _get_escritorio, _pedir_accion_gpt
 
@@ -553,6 +554,11 @@ def sesion_inteligente(audio_q: _stdlib_queue.Queue, rec: object) -> None:
                 break
             print(f"{_ts()}[ia] oído: '{texto}'")
             _hud_set_tx(texto)
+
+        if _es_apagate(texto):
+            _activar_kill_switch("sesion_inteligente")
+            _reproducir_oracion("Apagándome.")
+            break
 
         messages.append({"role": "user", "content": texto})
 
