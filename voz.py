@@ -97,21 +97,10 @@ def activar_ia() -> None:
 
 
 def _capturar_audio_ia(audio_q: queue.Queue, rec: vosk.KaldiRecognizer, timeout: float = 8.0) -> bytes:
-    """Captura audio de audio_q hasta que Vosk detecta silencio final o timeout."""
-    chunks: list[bytes] = []
-    rec.Reset()
-    t_fin = time.time() + timeout
-    while time.time() < t_fin:
-        try:
-            data = audio_q.get(timeout=0.5)
-        except queue.Empty:
-            continue
-        chunks.append(data)
-        if rec.AcceptWaveform(data):
-            if json.loads(rec.Result()).get("text", "").strip():
-                break
-    rec.Reset()
-    return b"".join(chunks)
+    """Captura audio esperando silencio sostenido tras el último texto detectado (parcial o final).
+    Delega en stt._capturar_audio para no truncar frases de más de una oración."""
+    from stt import _capturar_audio  # noqa: PLC0415
+    return _capturar_audio(audio_q, rec, timeout=timeout)
 
 
 def _activar_modo_ia_interno(audio_q: queue.Queue, rec: vosk.KaldiRecognizer) -> None:

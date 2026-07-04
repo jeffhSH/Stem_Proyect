@@ -3,6 +3,7 @@ import queue as _stdlib_queue
 import re
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 from faster_whisper import WhisperModel
@@ -11,6 +12,39 @@ from ia_state import _cancelado, _cancelar, _modelo_whisper, _ts, _whisper_lock
 
 _PALABRAS_SI = {"sí", "si", "dale", "ok", "procede", "adelante", "perfecto", "correcto", "listo", "va", "claro"}
 _PALABRAS_NO = {"no", "cancela", "cancelar", "para", "detén", "detente", "stop", "olvídalo", "olvida"}
+
+# ── initial_prompt de dominio para Whisper ──────────────────────────────────────
+_CONTACTOS_PATH = Path(__file__).parent / "contactos.json"
+_PALABRAS_DOMINIO = ["Stem", "WhatsApp", "YouTube", "escritorio", "descargas", "documentos"]
+
+_initial_prompt_cache: str | None = None
+_contactos_mtime_cache: float | None = None
+
+
+def _construir_initial_prompt() -> str:
+    """Construye (y cachea) un initial_prompt corto con vocabulario de dominio y nombres de contactos.
+    Se reconstruye solo si contactos.json cambió (por mtime) o en la primera llamada."""
+    global _initial_prompt_cache, _contactos_mtime_cache
+    try:
+        mtime = _CONTACTOS_PATH.stat().st_mtime if _CONTACTOS_PATH.exists() else None
+    except OSError:
+        mtime = None
+
+    if _initial_prompt_cache is not None and mtime == _contactos_mtime_cache:
+        return _initial_prompt_cache
+
+    nombres: list[str] = []
+    if _CONTACTOS_PATH.exists():
+        try:
+            datos = json.loads(_CONTACTOS_PATH.read_text(encoding="utf-8"))
+            nombres = list(datos.keys())
+        except Exception:
+            nombres = []
+
+    palabras = (_PALABRAS_DOMINIO + nombres)[:25]
+    _initial_prompt_cache = ", ".join(palabras)
+    _contactos_mtime_cache = mtime
+    return _initial_prompt_cache
 
 
 # ── Faster-Whisper ─────────────────────────────────────────────────────────────
@@ -40,7 +74,9 @@ def precargar_whisper() -> None:
 def transcribir_whisper(audio_bytes: bytes) -> str:
     """Transcribe audio raw int16 bytes con Faster-Whisper. Retorna el texto."""
     arr = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-    arr = np.clip(arr * 2.5, -1.0, 1.0)  # amplificación 150%
+    peak = np.abs(arr).max()
+    if peak > 1e-6:
+        arr = arr / peak * 0.9  # normalización por pico
     arr = np.ascontiguousarray(arr)
     segments, _ = _get_modelo().transcribe(
         arr,
@@ -51,6 +87,7 @@ def transcribir_whisper(audio_bytes: bytes) -> str:
         vad_parameters=dict(min_silence_duration_ms=300, threshold=0.3),
         condition_on_previous_text=False,
         word_timestamps=False,
+        initial_prompt=_construir_initial_prompt(),
     )
     return " ".join(seg.text for seg in segments).strip()
 
