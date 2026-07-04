@@ -29,15 +29,47 @@ _cancelar           = threading.Event()
 # ── Cartesia TTS ───────────────────────────────────────────────────────────────
 _CARTESIA_VOICE_ID = "2fc4f1ec-bfd0-46f1-8e6d-d4279eaaf838"
 _CARTESIA_MODEL    = "sonic-3.5"
+
+# CARTESIA_API_KEY es la key primaria; CARTESIA_API_KEYS_BACKUP es una lista separada
+# por comas que se usa por rotación cuando la key activa se agota (cuota/rate limit).
+_CARTESIA_KEYS = [
+    k.strip()
+    for k in (
+        [os.getenv("CARTESIA_API_KEY", "")]
+        + os.getenv("CARTESIA_API_KEYS_BACKUP", "").split(",")
+    )
+    if k.strip()
+]
+_cartesia_key_index = 0
+
 try:
     from cartesia import Cartesia as _CartesiaClient
-    _cartesia_client = (
-        _CartesiaClient(api_key=os.getenv("CARTESIA_API_KEY"))
-        if os.getenv("CARTESIA_API_KEY")
-        else None
-    )
 except ImportError:
-    _cartesia_client = None
+    _CartesiaClient = None
+
+
+def _construir_cartesia_client():
+    """Instancia el cliente Cartesia con la API key en _cartesia_key_index."""
+    global _cartesia_client
+    if _CartesiaClient is None or not _CARTESIA_KEYS:
+        _cartesia_client = None
+        return None
+    _cartesia_client = _CartesiaClient(api_key=_CARTESIA_KEYS[_cartesia_key_index])
+    return _cartesia_client
+
+
+def _rotar_cartesia_client():
+    """Avanza a la siguiente API key de Cartesia (round-robin) y reconstruye el cliente.
+    Se llama cuando la key activa falla (agotada/rate limit). Retorna None si no hay
+    más de una key configurada."""
+    global _cartesia_key_index
+    if len(_CARTESIA_KEYS) <= 1:
+        return None
+    _cartesia_key_index = (_cartesia_key_index + 1) % len(_CARTESIA_KEYS)
+    return _construir_cartesia_client()
+
+
+_cartesia_client = _construir_cartesia_client()
 
 VOICE = "es-MX-JorgeNeural"
 

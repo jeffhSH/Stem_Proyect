@@ -7,11 +7,11 @@ import miniaudio
 import numpy as np
 import sounddevice as sd
 
+import ia_state
 from ia_state import (
     VOICE,
     _CARTESIA_MODEL,
     _CARTESIA_VOICE_ID,
-    _cartesia_client,
     _client,
     _interrumpir_tts,
     _SENTENCE_END,
@@ -76,7 +76,7 @@ def _reproducir_oracion(texto: str) -> None:
 
 def _hablar_stem(texto: str) -> None:
     """TTS para el Orchestrator: Cartesia (Mateo) si disponible, Edge TTS si no."""
-    if _cartesia_client is not None:
+    if ia_state._cartesia_client is not None:
         _hablar_cartesia(texto)
     else:
         _hablar_edge_original(texto)
@@ -179,35 +179,46 @@ def _hablar_edge_original(texto: str) -> None:
 
 
 def _hablar_cartesia(texto: str) -> None:
-    """Sintetiza y reproduce texto con Cartesia (voz Mateo). Fallback a Edge TTS si falla."""
-    print(f"{_ts()}[ia] inicio TTS Cartesia (sintetizando...)")
-    try:
-        audio_bytes = b"".join(
-            _cartesia_client.tts.bytes(
-                model_id=_CARTESIA_MODEL,
-                transcript=texto,
-                voice={"mode": "id", "id": _CARTESIA_VOICE_ID},
-                language="es",
-                output_format={
-                    "container": "wav",
-                    "encoding": "pcm_s16le",
-                    "sample_rate": 44100,
-                },
+    """Sintetiza y reproduce texto con Cartesia (voz Mateo). Si la API key activa falla
+    (cuota agotada, rate limit, etc.), rota a la siguiente key configurada en
+    CARTESIA_API_KEYS_BACKUP y reintenta. Si se agotan todas, cae a Edge TTS."""
+    intentos = max(len(ia_state._CARTESIA_KEYS), 1)
+    for _ in range(intentos):
+        cliente = ia_state._cartesia_client
+        if cliente is None:
+            break
+        print(f"{_ts()}[ia] inicio TTS Cartesia (key #{ia_state._cartesia_key_index + 1}/{len(ia_state._CARTESIA_KEYS)}, sintetizando...)")
+        try:
+            audio_bytes = b"".join(
+                cliente.tts.bytes(
+                    model_id=_CARTESIA_MODEL,
+                    transcript=texto,
+                    voice={"mode": "id", "id": _CARTESIA_VOICE_ID},
+                    language="es",
+                    output_format={
+                        "container": "wav",
+                        "encoding": "pcm_s16le",
+                        "sample_rate": 44100,
+                    },
+                )
             )
-        )
-        decoded = miniaudio.decode(
-            audio_bytes,
-            output_format=miniaudio.SampleFormat.SIGNED16,
-            nchannels=1,
-            sample_rate=44100,
-        )
-        samples = np.frombuffer(bytes(decoded.samples), dtype=np.int16)
-        print(f"{_ts()}[ia] TTS Cartesia reproduciendo...")
-        _reproducir_audio(samples, decoded.sample_rate)
-        print(f"{_ts()}[ia] fin TTS Cartesia")
-    except Exception as exc:
-        print(f"{_ts()}[ia] error TTS Cartesia: {exc} — fallback a Edge TTS")
-        _hablar_edge_original(texto)
+            decoded = miniaudio.decode(
+                audio_bytes,
+                output_format=miniaudio.SampleFormat.SIGNED16,
+                nchannels=1,
+                sample_rate=44100,
+            )
+            samples = np.frombuffer(bytes(decoded.samples), dtype=np.int16)
+            print(f"{_ts()}[ia] TTS Cartesia reproduciendo...")
+            _reproducir_audio(samples, decoded.sample_rate)
+            print(f"{_ts()}[ia] fin TTS Cartesia")
+            return
+        except Exception as exc:
+            print(f"{_ts()}[ia] error TTS Cartesia (key #{ia_state._cartesia_key_index + 1}): {exc} — probando siguiente key")
+            if ia_state._rotar_cartesia_client() is None:
+                break
+    print(f"{_ts()}[ia] Cartesia agotado (todas las keys fallaron) — fallback a Edge TTS")
+    _hablar_edge_original(texto)
 
 
 def hablar_edge(texto: str) -> None:
@@ -219,7 +230,7 @@ def hablar_edge(texto: str) -> None:
         _tts_ya_reproducido.clear()
         return
 
-    if _cartesia_client is not None:
+    if ia_state._cartesia_client is not None:
         _hablar_cartesia(texto)
     else:
         _hablar_edge_original(texto)
