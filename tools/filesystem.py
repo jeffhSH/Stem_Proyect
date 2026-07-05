@@ -2,6 +2,7 @@ import base64
 import io
 import json
 import os
+import re
 import subprocess
 import threading
 import webbrowser
@@ -332,42 +333,151 @@ def _ejecutar_con_verificacion(
             return False
 
 
+_RUTA_WINDOWS_RE = re.compile(r"(?<![rR])(['\"])([A-Za-z]:[\\/][^'\"]*)\1")
+
+
+def _escapar_backslashes_sueltos(texto: str) -> str:
+    """Duplica cada backslash que no forme ya parte de un backslash doble.
+    Idempotente: un '\\\\' ya doblado queda intacto."""
+    resultado = []
+    i = 0
+    n = len(texto)
+    while i < n:
+        if texto[i] == "\\":
+            resultado.append("\\\\")
+            i += 2 if (i + 1 < n and texto[i + 1] == "\\") else 1
+        else:
+            resultado.append(texto[i])
+            i += 1
+    return "".join(resultado)
+
+
+def _sanitizar_rutas_windows(codigo: str) -> str:
+    """Corrige backslashes sueltos en literales tipo 'C:\\Users\\...' (no
+    r-strings) que causarían unicodeescape errors (ej. \\U interpretado como
+    inicio de un escape unicode de 8 dígitos)."""
+    def _fix(m: re.Match) -> str:
+        comilla, contenido = m.group(1), m.group(2)
+        return comilla + _escapar_backslashes_sueltos(contenido) + comilla
+    return _RUTA_WINDOWS_RE.sub(_fix, codigo)
+
+
+def _escapar_saltos_de_linea_en_strings(codigo: str) -> str:
+    """Reemplaza saltos de línea reales insertados dentro de strings de
+    comillas simples/dobles (NO triple-comilladas, esas sí permiten multilínea)
+    por '\\n' escapado. GPT a veces genera 'línea1\\nlínea2' con un salto de
+    línea real en vez de escapado, lo que rompe exec() con
+    'unterminated string literal'. Escaneo de caracteres, no AST — el código
+    roto no parsea, así que ast.parse no es una opción aquí."""
+    resultado: list[str] = []
+    i = 0
+    n = len(codigo)
+    en_string = False
+    comilla_actual = ""
+    while i < n:
+        ch = codigo[i]
+
+        if not en_string and codigo[i:i + 3] in ('"""', "'''"):
+            triple = codigo[i:i + 3]
+            cierre = codigo.find(triple, i + 3)
+            if cierre == -1:
+                resultado.append(codigo[i:])
+                break
+            resultado.append(codigo[i:cierre + 3])
+            i = cierre + 3
+            continue
+
+        if not en_string:
+            if ch in ("'", '"'):
+                en_string = True
+                comilla_actual = ch
+            resultado.append(ch)
+            i += 1
+            continue
+
+        # dentro de un string simple/doble
+        if ch == "\\" and i + 1 < n:
+            resultado.append(codigo[i:i + 2])
+            i += 2
+            continue
+        if ch == comilla_actual:
+            en_string = False
+            comilla_actual = ""
+            resultado.append(ch)
+            i += 1
+            continue
+        if ch == "\n":
+            resultado.append("\\n")
+            i += 1
+            continue
+        resultado.append(ch)
+        i += 1
+
+    return "".join(resultado)
+
+
+def _sanitizar_codigo(codigo: str) -> str:
+    """Sanitización determinística previa a exec(): la instrucción en
+    _TOOLS_SYSTEM (ia.py) es defensa en profundidad, no alcanza sola — GPT la
+    ignora una fracción significativa de las veces. Corrige 2 patrones de
+    error recurrentes sin requerir que el código ya sea sintácticamente
+    válido (por eso regex/escaneo de caracteres y no ast.parse)."""
+    codigo = _escapar_saltos_de_linea_en_strings(codigo)
+    codigo = _sanitizar_rutas_windows(codigo)
+    return codigo
+
+
 def _ejecutar_silencioso(
     descripcion: str,
     codigo: str,
     youtube_query: str | None = None,
-) -> bool:
-    """Ejecuta sin pedir confirmación por acción (el Orchestrator ya la obtuvo al inicio)."""
+) -> bool | tuple[bool, str | None]:
+    """Ejecuta sin pedir confirmación por acción (el Orchestrator ya la obtuvo al inicio).
+    Camino youtube_query y cancelado devuelven bool plano por compatibilidad con
+    _abrir_en_brave; el camino real de ejecución (exec) devuelve (exito, error|None)
+    para que el caller pueda registrar el detalle del fallo."""
     if _cancelado():
         return False
 
     if youtube_query:
         return _abrir_en_brave(youtube_query)
 
+    codigo_sanitizado = _sanitizar_codigo(codigo)
+    if codigo_sanitizado != codigo:
+        print(f"{_ts()}[agente] código sanitizado antes de ejecutar (original: {codigo!r})")
+    codigo = codigo_sanitizado
+
     print(f"{_ts()}[agente] ejecutando: {codigo}")
     try:
         exec(codigo, _build_exec_ns())  # noqa: S102
-        return True
+        return True, None
     except NameError as exc:
         print(f"{_ts()}[agente] GPT intentó usar un helper inexistente: {exc}")
         _log_exec_error(exc)
         _reproducir_oracion("Hubo un error al ejecutar.")
-        return False
+        return False, str(exc)
     except Exception as exc:
         print(f"{_ts()}[agente] exec error: {exc}")
         _log_exec_error(exc)
         _reproducir_oracion("Hubo un error al ejecutar.")
-        return False
+        return False, str(exc)
 
 
 def handle_ejecutar_accion(args: dict, ctx) -> dict:
     codigo = args.get("codigo", "").strip()
     print(f"{_ts()}[ia] acción: {codigo}")
-    exito = _ejecutar_silencioso(
+    resultado = _ejecutar_silencioso(
         descripcion=args.get("descripcion", "Ejecutando acción"),
         codigo=codigo,
     )
-    return {"exito": exito}
+    if isinstance(resultado, tuple):
+        exito, error = resultado
+    else:
+        exito, error = resultado, None
+    salida = {"exito": exito}
+    if not exito and error:
+        salida["error"] = error
+    return salida
 
 
 def handle_explorar_carpeta(args: dict, ctx) -> dict:

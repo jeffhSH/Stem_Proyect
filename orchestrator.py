@@ -29,6 +29,9 @@ def _replannear(peticion_actualizada: str) -> list[dict]:
                         '[{"paso": 1, "accion": "nombre_tool", "descripcion": "descripción breve en español"}, ...]. '
                         "Las tools disponibles son: ejecutar_accion, enviar_whatsapp, "
                         "enviar_archivo_whatsapp, buscar_y_abrir_youtube, explorar_carpeta, responder_en_voz. "
+                        "enviar_archivo_whatsapp es SOLO para enviar archivos por WhatsApp a un "
+                        "contacto — nunca uses esta tool para mover, copiar o guardar archivos en "
+                        "una carpeta local. Eso es ejecutar_accion con shutil.move/shutil.copy. "
                         "Respondé SOLO con el JSON, sin texto extra ni backticks."
                     ),
                 },

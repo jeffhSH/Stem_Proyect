@@ -1,6 +1,7 @@
 import json
 import os
 import queue as _stdlib_queue
+import re
 import threading
 import time
 
@@ -41,6 +42,10 @@ _TOOLS_SYSTEM = (
     "Cuando uses rutas de archivos en el código, usa siempre las rutas exactas "
     "que te devolvió explorar_carpeta. Usa barras dobles \\\\ o r-strings r'...' "
     "para rutas de Windows. "
+    "Para contenido con múltiples líneas en un archivo, usá \\n explícito dentro "
+    "del string ('línea 1\\nlínea 2'), o triple comillas \"\"\"...\"\"\" si es "
+    "largo. NUNCA insertes un salto de línea real dentro de un string de comillas "
+    "simples o dobles. "
     "Para envíos por WhatsApp, hacé una sola llamada a la tool correspondiente por petición. "
     "REGLA ANTI-COMBINACIONES: en enviar_archivo_whatsapp, cada item de 'envios' representa "
     "UN ÚNICO par (contacto, archivo) explícitamente pedido por el usuario. "
@@ -66,6 +71,12 @@ _TOOLS_SYSTEM = (
     "haber descomprimido). Si hay dependencia pendiente, resuélvela primero. "
     "comprimir_archivos requiere que los archivos ya existan; descomprimir_archivo "
     "requiere que el .zip ya exista o haya sido creado en un paso previo. "
+    "Cuando ejecutar_accion vaya a crear contenido de texto (ideas, notas, listas, "
+    "resúmenes), generá contenido REAL y específico acorde al tema pedido — nunca uses "
+    "placeholders genéricos como 'Idea 1', 'Texto 1', 'Item 1'. Respetá EXACTAMENTE la "
+    "cantidad de elementos pedida por el usuario, ni más ni menos — si el usuario corrigió "
+    "la cantidad (ej: de 10 a 2), la corrección tiene prioridad sobre cualquier cantidad "
+    "mencionada anteriormente en la conversación. "
     "REGLA DE TAREAS MÚLTIPLES: si el usuario pidió varias acciones, completar "
     "una (envío, creación, búsqueda, o cualquier otra tool) NO es señal de "
     "cierre — identificá TODAS las acciones pedidas y ejecutalas antes de "
@@ -187,6 +198,7 @@ def _ejecutar_turno(
     orchestrator: Orchestrator | None = None
     _bloqueos_gk = 0
     _tool_choice: object = {"type": "function", "function": {"name": "declarar_plan"}}
+    _ultimo_paso_recordado = -1
     MAX_RONDAS = 12
 
     _barge_in.clear()
@@ -216,6 +228,28 @@ def _ejecutar_turno(
             content = m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
             return {"role": role, "content": str(content or "")[:80]}
         print(f"{_ts()}[diag] messages[-3:] = {[_safe_msg_preview(m) for m in messages[-3:]]}")
+
+        if (
+            orchestrator is not None
+            and orchestrator.paso_actual < len(orchestrator.plan)
+            and orchestrator.paso_actual != _ultimo_paso_recordado
+        ):
+            _paso_siguiente = orchestrator.plan[orchestrator.paso_actual]
+            if _paso_siguiente.get("accion") == "ejecutar_accion":
+                _desc_confirmada = (_paso_siguiente.get("descripcion") or "").strip()
+                if _desc_confirmada:
+                    print(f"{_ts()}[ia] recordatorio de contenido inyectado para paso {orchestrator.paso_actual + 1}: '{_desc_confirmada}'")
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"Recordatorio del paso confirmado: \"{_desc_confirmada}\". "
+                            "Generá contenido real y específico acorde a esa descripción exacta "
+                            "(misma cantidad de elementos, mismo tema) — no la reinterpretes ni "
+                            "uses placeholders genéricos."
+                        ),
+                    })
+            _ultimo_paso_recordado = orchestrator.paso_actual
+
         try:
             resp = _client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -304,6 +338,33 @@ def _ejecutar_turno(
         descripcion_corta = args.get("descripcion", tool_name)
         orchestrator.autorizar(tool_name, descripcion_corta)
 
+        if tool_name == "ejecutar_accion":
+            _idx_confirmado = orchestrator.paso_actual - 1
+            if 0 <= _idx_confirmado < len(orchestrator.plan):
+                _paso_confirmado = orchestrator.plan[_idx_confirmado]
+                if _paso_confirmado.get("accion") == "ejecutar_accion":
+                    _codigo_generado = args.get("codigo", "")
+                    _placeholders = re.findall(
+                        r"\b(?:Idea|Item|Texto|Elemento|Punto|Nota)\s*\d+\b",
+                        _codigo_generado,
+                        re.IGNORECASE,
+                    )
+                    if _placeholders:
+                        print(
+                            f"{_ts()}[ia] ADVERTENCIA: código de ejecutar_accion parece usar "
+                            f"placeholders genéricos {_placeholders[:5]} — paso confirmado: "
+                            f"'{_paso_confirmado.get('descripcion', '')}'"
+                        )
+                    _match_cantidad = re.search(r"\d+", _paso_confirmado.get("descripcion", ""))
+                    if _match_cantidad and _placeholders:
+                        _cantidad_esperada = int(_match_cantidad.group())
+                        if len(_placeholders) != _cantidad_esperada:
+                            print(
+                                f"{_ts()}[ia] ADVERTENCIA: cantidad de placeholders "
+                                f"({len(_placeholders)}) no coincide con la cantidad esperada "
+                                f"según la descripción confirmada ({_cantidad_esperada})"
+                            )
+
         if tool_name == "responder_en_voz":
             respuesta = args.get("texto", "")
             cerrar = bool(args.get("cerrar_sesion", False))
@@ -347,6 +408,11 @@ def _ejecutar_turno(
         if handler is not None:
             ctx = ToolContext(audio_q=audio_q, rec=rec, orchestrator=orchestrator, peticion_original=texto)
             resultado = handler(args, ctx)
+            if tool_name == "ejecutar_accion" and isinstance(resultado, dict) and not resultado.get("exito", True):
+                _error_detalle = resultado.get("error") or "sin detalle"
+                orchestrator._registrar_desviacion(
+                    f"paso {orchestrator.paso_actual} falló en ejecución: {_error_detalle}"
+                )
             messages.append({
                 "role":         "tool",
                 "tool_call_id": tool_call.id,
