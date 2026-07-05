@@ -42,6 +42,18 @@ _TOOLS_SYSTEM = (
     "Cuando uses rutas de archivos en el código, usa siempre las rutas exactas "
     "que te devolvió explorar_carpeta. Usa barras dobles \\\\ o r-strings r'...' "
     "para rutas de Windows. "
+    "REGLA DE ARCHIVO NO ENCONTRADO: si explorar_carpeta devuelve truncado=true y "
+    "el archivo que el usuario busca (por nombre parcial) no aparece entre los "
+    "archivos devueltos, o si no aparece ninguna coincidencia razonable, NUNCA "
+    "inventes una ruta ni uses enviar_archivo_whatsapp/comprimir_archivos con un "
+    "archivo que no viste explícitamente — las rutas no verificadas se rechazan "
+    "de todos modos en el código, así que inventar una solo hace fallar el envío. "
+    "En cambio usá responder_en_voz: si estaba truncado, decí que no lo encontraste "
+    "entre los primeros resultados y pedí el nombre exacto o la carpeta específica; "
+    "si no había ninguna coincidencia, ofrecé una pregunta directa sugiriendo la "
+    "siguiente carpeta lógica a revisar (ej: buscaste en descargas y no apareció → "
+    "'No lo hallé en Descargas, ¿querés que busque en Documentos o Escritorio?'). "
+    "Cuando el usuario responda, hacé un nuevo explorar_carpeta en la carpeta indicada. "
     "Para contenido con múltiples líneas en un archivo, usá \\n explícito dentro "
     "del string ('línea 1\\nlínea 2'), o triple comillas \"\"\"...\"\"\" si es "
     "largo. NUNCA insertes un salto de línea real dentro de un string de comillas "
@@ -307,7 +319,15 @@ def _ejecutar_turno(
                 return "continuar"
 
             resumen_natural = (args.get("resumen_natural") or "").strip()
+            # Si GPT re-declara el plan a mitad de turno, no perder lo ya verificado
+            # (rutas_vistas/archivos_creados) del Orchestrator anterior — si no, un
+            # archivo creado antes de la redeclaración queda "no visto" y se rechaza
+            # al intentar enviarlo después.
+            _rutas_previas = orchestrator.rutas_vistas if orchestrator is not None else set()
+            _archivos_previos = orchestrator.archivos_creados if orchestrator is not None else set()
             orchestrator = Orchestrator(plan, texto, resumen_natural=resumen_natural)
+            orchestrator.rutas_vistas.update(_rutas_previas)
+            orchestrator.archivos_creados.update(_archivos_previos)
 
             if not orchestrator.confirmar_con_usuario(audio_q, rec):
                 messages.append({

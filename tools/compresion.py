@@ -81,11 +81,40 @@ def _es_entrada_segura(nombre: str) -> bool:
     return not (normalizado.startswith("/") or ".." in normalizado.split("/"))
 
 
+def _ruta_verificada(archivo: str, orquestador) -> bool:
+    """True si la ruta vino de explorar_carpeta (match exacto) o su nombre de
+    archivo corresponde a algo que ejecutar_accion escribió con éxito este turno
+    (match por basename)."""
+    return (
+        archivo in orquestador.rutas_vistas
+        or os.path.basename(archivo) in orquestador.archivos_creados
+    )
+
+
+def _filtrar_rutas_no_verificadas(archivos: list[str], ctx) -> tuple[list[str], list[str]]:
+    """Mismo enforcement que en enviar_archivo_whatsapp: rechaza en código rutas que
+    no vinieron de explorar_carpeta ni de una escritura propia de ejecutar_accion en
+    este turno. Fail-safe: sin ctx/orchestrator (ej. test manual directo), no filtra."""
+    orquestador = getattr(ctx, "orchestrator", None)
+    if orquestador is None:
+        return archivos, []
+    validos, rechazados = [], []
+    for archivo in archivos:
+        if not _ruta_verificada(archivo, orquestador):
+            rechazados.append(archivo)
+            print(f"{_ts()}[compresion] rechazado: ruta no verificada (ni explorar_carpeta ni creación propia): {archivo}")
+        else:
+            validos.append(archivo)
+    return validos, rechazados
+
+
 def handle_comprimir_archivos(args: dict, ctx) -> dict:
     archivos = args.get("archivos", [])
     nombre_zip = (args.get("nombre_zip") or "archivos_comprimidos.zip").strip()
     if not nombre_zip.lower().endswith(".zip"):
         nombre_zip += ".zip"
+
+    archivos, rutas_rechazadas = _filtrar_rutas_no_verificadas(archivos, ctx)
 
     carpeta_destino = _resolver_destino(args.get("destino"), _get_escritorio)
     ruta_zip = os.path.join(carpeta_destino, nombre_zip)
@@ -104,12 +133,15 @@ def handle_comprimir_archivos(args: dict, ctx) -> dict:
             incluidos.append(archivo)
 
     print(f"{_ts()}[compresion] zip creado: {ruta_zip} ({len(incluidos)} archivo(s))")
-    return {
+    salida = {
         "exito": len(incluidos) > 0,
         "ruta_zip": ruta_zip,
         "archivos_incluidos": len(incluidos),
         "archivos_faltantes": faltantes,
     }
+    if rutas_rechazadas:
+        salida["rutas_rechazadas"] = rutas_rechazadas
+    return salida
 
 
 def handle_descomprimir_archivo(args: dict, ctx) -> dict:

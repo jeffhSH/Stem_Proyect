@@ -1,4 +1,5 @@
 import json
+import os
 from collections import Counter
 
 from ia_state import _client, _hud_set_estado, _ts
@@ -132,9 +133,43 @@ def handle_enviar_whatsapp(args: dict, ctx) -> dict:
     return {"enviado": ok}
 
 
+def _ruta_verificada(archivo: str, orquestador) -> bool:
+    """True si la ruta vino de explorar_carpeta (match exacto) o su nombre de
+    archivo corresponde a algo que ejecutar_accion escribió con éxito este turno
+    (match por basename — ver _extraer_nombres_archivo_de_codigo)."""
+    return (
+        archivo in orquestador.rutas_vistas
+        or os.path.basename(archivo) in orquestador.archivos_creados
+    )
+
+
+def _filtrar_rutas_no_verificadas(envios: list[dict], ctx) -> tuple[list[dict], list[str]]:
+    """Rechaza en código (no solo por instrucción de prompt) cualquier 'archivo'
+    que no haya sido visto vía explorar_carpeta ni escrito por un ejecutar_accion
+    exitoso en este turno. Sin esto, GPT puede inventar una ruta plausible y el
+    envío se hace igual — esto es lo que realmente lo evita. Fail-safe: si no hay
+    ctx/orchestrator (ej. llamada directa en un test manual), no filtra nada."""
+    orquestador = getattr(ctx, "orchestrator", None)
+    if orquestador is None:
+        return envios, []
+    validos, rechazados = [], []
+    for e in envios:
+        archivo = e.get("archivo", "")
+        if archivo and not _ruta_verificada(archivo, orquestador):
+            rechazados.append(archivo)
+            print(f"{_ts()}[wa] rechazado: ruta no verificada (ni explorar_carpeta ni creación propia): {archivo}")
+        else:
+            validos.append(e)
+    return validos, rechazados
+
+
 def handle_enviar_archivo_whatsapp(args: dict, ctx) -> dict:
     from whatsapp import enviar_archivo_whatsapp  # noqa: PLC0415
     envios = args.get("envios", [])
+
+    envios, rutas_rechazadas = _filtrar_rutas_no_verificadas(envios, ctx)
+    if not envios:
+        return {"enviado": False, "rutas_rechazadas": rutas_rechazadas} if rutas_rechazadas else {"enviado": False}
 
     _arch_counts = Counter(e.get("archivo", "") for e in envios if e.get("archivo"))
     _hay_alerta = False
@@ -153,4 +188,7 @@ def handle_enviar_archivo_whatsapp(args: dict, ctx) -> dict:
     if not ok:
         _hud_set_estado("hablando")
         hablar_edge("No pude enviar uno o más archivos.")
-    return {"enviado": ok}
+    salida = {"enviado": ok}
+    if rutas_rechazadas:
+        salida["rutas_rechazadas"] = rutas_rechazadas
+    return salida

@@ -463,6 +463,38 @@ def _ejecutar_silencioso(
         return False, str(exc)
 
 
+def _extraer_rutas_de_codigo(codigo: str) -> list[str]:
+    """Extrae literales de ruta ABSOLUTA tipo 'C:\\...' del código fuente sin
+    ejecutar/parsear (heurística por regex, mismo espíritu que la sanitización).
+    Colapsa backslashes dobles a uno solo para que coincida con el valor real de
+    la ruta en runtime, sin importar si GPT escribió 'C:\\Users' o 'C:\\\\Users'."""
+    rutas = []
+    for m in _RUTA_WINDOWS_RE.finditer(codigo):
+        rutas.append(re.sub(r"\\{2,}", r"\\", m.group(2)))
+    return rutas
+
+
+_ARCHIVO_EXT_RE = re.compile(
+    r"""['"]([^'"]+\.(?:txt|csv|json|md|zip|log|xml|cfg|ini|pdf|docx?|xlsx?|"""
+    r"""pptx?|html?|py|jpe?g|png|gif|bmp|mp3|mp4|wav|rtf|yaml|yml))['"]""",
+    re.IGNORECASE,
+)
+
+
+def _extraer_nombres_archivo_de_codigo(codigo: str) -> list[str]:
+    """Extrae nombres de archivo (basename) de literales de string en el código,
+    sin importar si el literal es una ruta completa o solo el nombre. GPT arma la
+    ruta final de mil formas distintas en runtime (_get_documentos() + os.path.join,
+    os.path.expanduser, concatenación, literal completo...) pero el nombre de
+    archivo casi siempre aparece como literal simple — por eso confiar por nombre
+    (no por ruta completa) es lo que hace viable el enforcement sin falsos
+    rechazos contra el propio código que Stem genera."""
+    nombres = []
+    for m in _ARCHIVO_EXT_RE.finditer(codigo):
+        nombres.append(os.path.basename(m.group(1).replace("\\", "/")))
+    return nombres
+
+
 def handle_ejecutar_accion(args: dict, ctx) -> dict:
     codigo = args.get("codigo", "").strip()
     print(f"{_ts()}[ia] acción: {codigo}")
@@ -474,6 +506,15 @@ def handle_ejecutar_accion(args: dict, ctx) -> dict:
         exito, error = resultado
     else:
         exito, error = resultado, None
+    if exito:
+        # Archivos que Stem mismo acaba de escribir en este turno quedan "vistos"
+        # sin exigir un explorar_carpeta redundante — el rechazo en
+        # enviar_archivo_whatsapp/comprimir_archivos es contra rutas que NADIE
+        # confirmó (ni explorar_carpeta ni una escritura propia), no contra esto.
+        orquestador = getattr(ctx, "orchestrator", None)
+        if orquestador is not None:
+            orquestador.rutas_vistas.update(_extraer_rutas_de_codigo(codigo))
+            orquestador.archivos_creados.update(_extraer_nombres_archivo_de_codigo(codigo))
     salida = {"exito": exito}
     if not exito and error:
         salida["error"] = error
@@ -488,4 +529,10 @@ def handle_explorar_carpeta(args: dict, ctx) -> dict:
     if truncado:
         archivos = archivos[:40]
     print(f"{_ts()}[explorar] {carpeta}: {len(archivos)} archivos" + (f" (truncado de {total})" if truncado else ""))
+    orquestador = getattr(ctx, "orchestrator", None)
+    if orquestador is not None:
+        # Solo lo realmente mostrado a GPT (si hay truncado, lo de más allá del corte
+        # no cuenta como "visto") — de eso depende el rechazo en enviar_archivo_whatsapp/
+        # comprimir_archivos.
+        orquestador.rutas_vistas.update(archivos)
     return {"archivos": archivos, "total_archivos": total, "truncado": truncado}

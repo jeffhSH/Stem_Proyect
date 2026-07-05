@@ -128,6 +128,16 @@ class Orchestrator:
         self.paso_actual = 0
         self.desviaciones: list[str] = []
         self.resumen_natural = resumen_natural
+        # Rutas EXACTAS que devolvió explorar_carpeta (solo lo realmente mostrado a
+        # GPT, no lo truncado) — para archivos preexistentes que Stem debió encontrar.
+        self.rutas_vistas: set[str] = set()
+        # Nombres de archivo (basename) que un ejecutar_accion exitoso escribió en este
+        # turno. GPT arma la ruta completa de mil formas distintas (_get_documentos() +
+        # os.path.join, os.path.expanduser, literal, etc.) — el nombre de archivo es lo
+        # único que aparece siempre igual en el código, así que confiar por nombre es lo
+        # que hace viable el enforcement sin re-exigir explorar_carpeta para lo que Stem
+        # mismo acaba de crear.
+        self.archivos_creados: set[str] = set()
 
     def confirmar_con_usuario(self, audio_q: _stdlib_queue.Queue, rec: object) -> bool:
         # BUG 1 — si el plan es solo conversacional, no hace falta confirmar
